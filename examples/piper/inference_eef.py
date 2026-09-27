@@ -2,11 +2,12 @@
 """
 Piper 末端位姿 (EEF) 推理脚本 — 用于 pi05_piper_eef / pi05_piper_eef_lora 配置。
 
-模型在训练时输出 7 维 EEF 位姿增量（前 6 维位姿 delta，第 7 维夹爪绝对），
-策略服务器在输出侧用 ``AbsoluteEEFPoseActions`` 把当前-TCP相对增量重建成
-episode 初始 TCP 坐标系中的目标位姿。本脚本记录启动推理时的真实机器人 TCP
-``^B T_R(0)``，并通过 ``^B T_target = ^B T_R(0) @ D_target`` 映射到机器人基座。
-因此服务器返回的 ``actions`` 是 episode-relative 目标：
+默认恢复 2026-09-19 的机械臂绝对 TCP 推理方式：当前机械臂 TCP 位姿
+直接作为 state。策略服务器把相对当前 state 的动作增量还原为 Robot Base 下
+的绝对 TCP 目标后，客户端直接下发。法兰与爪尖之间的 TCP 偏移由控制器补偿。
+使用后来训练的其他坐标系模型时，需显式选择对应的 --model_action_frame。
+
+默认模式下服务器返回的 ``actions`` 是 Robot Base 下的绝对目标：
 
     [x, y, z, rx, ry, rz(旋转向量/axis-angle, rad), gripper_command]
 
@@ -25,17 +26,22 @@ episode 初始 TCP 坐标系中的目标位姿。本脚本记录启动推理时�
 的 ``PiperInterpolationController`` 及训练数据采集时保持一致。
 
 用法:
-    # 1. 在 GPU 服务器上启动策略服务器
-    uv run scripts/serve_policy.py policy:checkpoint \
+    # 1. 在 GPU 服务器上启动与旧版 Robot Base 绝对 TCP 数据匹配的 checkpoint
+    uv run scripts/serve_policy.py --port 6006 policy:checkpoint \
         --policy.config=pi05_piper_eef \
-        --policy.dir=checkpoints/pi05_piper_eef/my_experiment/20000
+        --policy.dir=<旧版绝对 TCP 模型 checkpoint>
 
-    # 2. 在机械臂端运行推理 (基座相机 = RealSense D435i, 腕部相机 = USB 摄像头)
+    # 2. 在机械臂端运行推理 (默认 robot_absolute；仅用于旧版 Robot Base 模型)
     python examples/piper/inference_eef.py --host localhost --port 6006 \
         --rs2_base 231122071797 --usb_wrist 0
 
     # 交互模式 (每次推理前输入指令)
     python examples/piper/inference_eef.py --host localhost --interactive
+
+    # PICO World 下绝对 TCP 位姿数据训练的模型：在机器人端提供数据集用于坐标锚点
+    python examples/piper/inference_eef.py --host localhost --port 6006 \
+        --model_action_frame tcp_absolute --absolute_pose_dataset ./pick_cube_raw_action \
+        --reference_episode 0 --no-binary_gripper
 
     # 数据集离线评测 (可视化末端位姿，可导出 GIF，不连接真实机械臂)
     python examples/piper/inference_eef.py --dataset ./pick_place --episode 0 --gif eval.gif --no_show
@@ -126,6 +132,9 @@ except ImportError:
 # --- 相机工具 (支持 RealSense D435i/D405 和 OpenCV) ---
 from camera_utils import create_cameras
 
+from inference_action_transform import pico_relative_actions_to_tcp_relative
+from inference_action_transform import tcp_relative_actions_to_pico_relative
+
 # --- DM-J4310-2EC 夹爪驱动 (力位模式, USB2CAN /dev/ttyACM1) ---
 # 与机械臂的 can0 相互独立；驱动代码在 examples/piper/dm_gripper/ 下。
 _DM_GRIPPER_PATH = os.path.join(os.path.dirname(__file__), "dm_gripper")
@@ -152,7 +161,7 @@ except ImportError as _e:
 DEFAULT_ACTION_HORIZON = 50
 
 # 每次执行多少步后再重新查询模型 (≤ action_horizon)
-DEFAULT_EXEC_HORIZON = 20
+DEFAULT_EXEC_HORIZON = 1
 # 训练数据频率 (20 fps)
 CONTROL_FREQ = 20
 # 默认速度百分比
@@ -189,6 +198,23 @@ GRIPPER_SPEED_RAD_S = 6.0  # 移动速度上限 (rad/s)
 #   读: 爪尖 = 法兰 + R @ offset      写: 法兰 = 爪尖 - R @ offset
 # ⚠ 请按实际测量值填写 (夹爪本体长度 + 指尖到法兰的距离)。默认全 0 = 不补偿。
 GRIPPER_TCP_OFFSET_M = np.array([0.0, 0.0, 0.22], dtype=np.float64)
+
+# pick_cube was converted with the previous controller-to-virtual-TCP mount.
+# The current robot TCP convention follows the updated pico_arm_transform.py.
+# H = inv(^C T_E_old) @ ^C T_E_current = ^E_old T_E_current.
+# It converts episode-relative poses by conjugation, never by subtracting xyz
+# or Euler angles:
+#   D_old     = H @ D_current @ inv(H)
+#   D_current = inv(H) @ D_old @ H
+PICK_CUBE_OLD_TO_CURRENT_TCP = np.array(
+    [
+        [0.8658017045821326, -0.01954129381682107, 0.5000055461478783, 0.06966768097352391],
+        [0.03803783504616464, 0.998916159233334, -0.02682591895024177, -0.001363372983792826],
+        [-0.4989394065892914, 0.04224505484064194, 0.8656066219096504, -0.05992131303582916],
+        [0.0, 0.0, 0.0, 1.0],
+    ],
+    dtype=np.float64,
+)
 
 # 初始关节位姿 (重置用, 弧度)
 INIT_JOINTS_RAD = np.array([-np.pi / 2, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
@@ -249,6 +275,101 @@ def _relative_pose6(reference: np.ndarray, current: np.ndarray) -> np.ndarray:
 def _compose_pose6(parent: np.ndarray, local: np.ndarray) -> np.ndarray:
     """Return ``T_parent @ T_local`` as ``[xyz, rotvec]``."""
     return _matrix_to_pose6(_pose6_to_matrix(parent) @ _pose6_to_matrix(local))
+
+
+def _conjugate_pose6(frame_change: np.ndarray, pose: np.ndarray) -> np.ndarray:
+    """Return ``frame_change @ pose @ inv(frame_change)`` as ``[xyz, rotvec]``."""
+    frame_change = np.asarray(frame_change, dtype=np.float64)
+    if frame_change.shape != (4, 4):
+        raise ValueError(f"frame_change must have shape (4, 4), got {frame_change.shape}")
+    return _matrix_to_pose6(
+        frame_change @ _pose6_to_matrix(pose) @ np.linalg.inv(frame_change)
+    )
+
+
+def _episode_poses_to_runtime(
+    poses: np.ndarray,
+    *,
+    model_action_frame: str = "tcp",
+    legacy_pick_cube_tcp: bool = False,
+    tcp_start_pose: Optional[np.ndarray] = None,
+    pico_reference_pose: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Convert model-frame episode poses for offline execution visualization.
+
+    ``poses`` keeps the model/dataset convention. For an old ``pick_cube``
+    model, each pose is first conjugated into the current robot TCP frame. If
+    ``tcp_start_pose`` is provided, the result is then anchored in Robot Base:
+    ``^B T_target(t) = ^B T_start @ D_current(t)``.
+    """
+    if model_action_frame not in {"robot_absolute", "chunk_relative", "tcp", "pico", "pico_absolute", "tcp_absolute"}:
+        raise ValueError(f"invalid model_action_frame: {model_action_frame!r}")
+    if model_action_frame in {"chunk_relative", "pico", "pico_absolute", "tcp_absolute"} and legacy_pick_cube_tcp:
+        raise ValueError("model_action_frame='pico' and legacy_pick_cube_tcp are mutually exclusive")
+
+    converted = np.asarray(poses, dtype=np.float64).copy()
+    if converted.ndim != 2 or converted.shape[1] < 6:
+        raise ValueError(f"poses must have shape (N, >=6), got {converted.shape}")
+    start = None
+    if tcp_start_pose is not None:
+        start = np.asarray(tcp_start_pose, dtype=np.float64)
+        if start.shape != (6,):
+            raise ValueError(f"tcp_start_pose must have shape (6,), got {start.shape}")
+
+    if model_action_frame in {"robot_absolute", "chunk_relative"}:
+        return converted
+    if model_action_frame in {"pico_absolute", "tcp_absolute"}:
+        if pico_reference_pose is None:
+            raise ValueError("absolute pose mode requires pico_reference_pose")
+        reference = np.asarray(pico_reference_pose, dtype=np.float64)
+        for index, pose in enumerate(converted):
+            converted[index, :6] = _relative_pose6(reference, pose[:6])
+    if model_action_frame in {"pico", "pico_absolute"}:
+        converted = pico_relative_actions_to_tcp_relative(converted)
+
+    old_to_current_inverse = np.linalg.inv(PICK_CUBE_OLD_TO_CURRENT_TCP)
+    for index, pose in enumerate(converted):
+        runtime_pose = (
+            _conjugate_pose6(old_to_current_inverse, pose[:6])
+            if legacy_pick_cube_tcp
+            else pose[:6].copy()
+        )
+        if start is not None:
+            runtime_pose = _compose_pose6(start, runtime_pose)
+        converted[index, :6] = runtime_pose
+    return converted
+
+
+def _execution_actions(actions: np.ndarray, model_action_frame: str) -> np.ndarray:
+    """Drop the same-frame action in raw PICO chunks before execution."""
+    actions = np.asarray(actions)
+    if model_action_frame in {"chunk_relative", "pico_absolute", "tcp_absolute"}:
+        if actions.ndim != 2 or len(actions) < 2:
+            raise ValueError("同帧 action 模式至少需要 2 步动作，才能跳过第 0 步")
+        return actions[1:]
+    return actions
+
+
+def _load_raw_pico_reference(
+    data_dir: str, episode: int = 0, *, pose_frame: str = "pico_teleop"
+) -> tuple[np.ndarray, tuple[float, float]]:
+    """Load one training episode's absolute PICO start and gripper limits."""
+    import pyarrow.parquet as pq
+
+    root = Path(data_dir)
+    info = json.loads((root / "meta" / "info.json").read_text())
+    if info.get("pose_coordinate_frame") != pose_frame or info.get("coordinate_transform_applied") is not False:
+        raise ValueError(f"数据集必须是未经坐标转换的 {pose_frame} 绝对位姿")
+    chunk = episode // int(info["chunks_size"])
+    path = root / "data" / f"chunk-{chunk:03d}" / f"episode_{episode:06d}.parquet"
+    state = np.asarray(pq.read_table(path, columns=["state"])["state"][0].as_py(), dtype=np.float64)
+    if state.shape != (7,) or not np.isfinite(state).all():
+        raise ValueError(f"episode {episode} 的初始 state 无效")
+    stats = json.loads((root / "meta" / "stats.json").read_text())["state"]
+    closed, opened = float(stats["min"][6]), float(stats["max"][6])
+    if not np.isfinite([closed, opened]).all() or opened <= closed:
+        raise ValueError("数据集夹爪范围无效")
+    return state[:6], (closed, opened)
 
 
 # ===========================================================================
@@ -562,6 +683,118 @@ class DmGripperController:
 # ===========================================================================
 
 
+class _RealRobotTrajectoryRecorder:
+    """Collect and atomically save real-robot inference samples as NPZ."""
+
+    FORMAT_VERSION = 1
+
+    def __init__(self, output_path: str):
+        path = Path(output_path).expanduser()
+        if path.suffix == "":
+            path = path.with_suffix(".npz")
+        if path.suffix.lower() != ".npz":
+            raise ValueError("trajectory_log 必须使用 .npz 扩展名")
+        if path.exists():
+            raise FileExistsError(f"轨迹日志已存在，为避免覆盖请换一个路径: {path}")
+        self.path = path
+        self._session_start = time.monotonic()
+        self._episode_id = -1
+        self._episode_start_tcp: list[np.ndarray] = []
+        self._episode_index: list[int] = []
+        self._action_index: list[int] = []
+        self._command_time_s: list[float] = []
+        self._measurement_time_s: list[float] = []
+        self._wall_time_ns: list[int] = []
+        self._model_action: list[np.ndarray] = []
+        self._runtime_relative_target: list[np.ndarray] = []
+        self._base_target_tcp: list[np.ndarray] = []
+        self._measured_tcp: list[np.ndarray] = []
+        self._scaled_gripper_mm: list[float] = []
+        self._command_gripper_mm: list[float] = []
+        self._last_saved_count = -1
+        self._owns_output = False
+
+    def begin_episode(self, robot_tcp0: np.ndarray) -> None:
+        tcp0 = np.asarray(robot_tcp0, dtype=np.float64)
+        if tcp0.shape != (6,):
+            raise ValueError(f"robot_tcp0 must have shape (6,), got {tcp0.shape}")
+        self._episode_id += 1
+        self._episode_start_tcp.append(tcp0.copy())
+
+    def record(
+        self,
+        *,
+        action_index: int,
+        command_time: float,
+        model_action: np.ndarray,
+        runtime_relative_target: np.ndarray,
+        base_target_tcp: np.ndarray,
+        scaled_gripper_mm: float,
+        command_gripper_mm: float,
+        measured_tcp: np.ndarray,
+        measurement_time: float,
+    ) -> None:
+        if self._episode_id < 0:
+            raise RuntimeError("begin_episode must be called before record")
+        self._episode_index.append(self._episode_id)
+        self._action_index.append(int(action_index))
+        self._command_time_s.append(command_time - self._session_start)
+        self._measurement_time_s.append(measurement_time - self._session_start)
+        self._wall_time_ns.append(time.time_ns())
+        self._model_action.append(np.asarray(model_action, dtype=np.float64).copy())
+        self._runtime_relative_target.append(
+            np.asarray(runtime_relative_target, dtype=np.float64).copy()
+        )
+        self._base_target_tcp.append(np.asarray(base_target_tcp, dtype=np.float64).copy())
+        self._measured_tcp.append(np.asarray(measured_tcp, dtype=np.float64).copy())
+        self._scaled_gripper_mm.append(float(scaled_gripper_mm))
+        self._command_gripper_mm.append(float(command_gripper_mm))
+
+    @staticmethod
+    def _stack(rows: list[np.ndarray], width: int) -> np.ndarray:
+        return np.stack(rows).astype(np.float64) if rows else np.empty((0, width), dtype=np.float64)
+
+    def save(
+        self, *, legacy_pick_cube_tcp: bool, prompt: str, model_action_frame: str = "robot_absolute"
+    ) -> None:
+        count = len(self._episode_index)
+        if count == self._last_saved_count:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.path.exists() and not self._owns_output:
+            raise FileExistsError(f"轨迹日志已存在，拒绝覆盖: {self.path}")
+        metadata = {
+            "format_version": self.FORMAT_VERSION,
+            "pose_layout": "[x_m, y_m, z_m, rx_rotvec_rad, ry_rotvec_rad, rz_rotvec_rad]",
+            "model_action_layout": "pose6 + predicted_gripper",
+            "model_action_frame": model_action_frame,
+            "legacy_pick_cube_tcp": bool(legacy_pick_cube_tcp),
+            "prompt": prompt,
+        }
+        temporary_path = self.path.with_name(f".{self.path.name}.tmp")
+        with temporary_path.open("wb") as file:
+            np.savez_compressed(
+                file,
+                metadata_json=np.asarray(json.dumps(metadata, ensure_ascii=False)),
+                episode_start_tcp=self._stack(self._episode_start_tcp, 6),
+                episode_index=np.asarray(self._episode_index, dtype=np.int32),
+                action_index=np.asarray(self._action_index, dtype=np.int32),
+                command_time_s=np.asarray(self._command_time_s, dtype=np.float64),
+                measurement_time_s=np.asarray(self._measurement_time_s, dtype=np.float64),
+                wall_time_ns=np.asarray(self._wall_time_ns, dtype=np.int64),
+                model_action=self._stack(self._model_action, 7),
+                runtime_relative_target=self._stack(self._runtime_relative_target, 6),
+                base_target_tcp=self._stack(self._base_target_tcp, 6),
+                measured_tcp=self._stack(self._measured_tcp, 6),
+                scaled_gripper_mm=np.asarray(self._scaled_gripper_mm, dtype=np.float64),
+                command_gripper_mm=np.asarray(self._command_gripper_mm, dtype=np.float64),
+            )
+        os.replace(temporary_path, self.path)
+        self._owns_output = True
+        self._last_saved_count = count
+        print(f"[Trajectory] 已保存 {count} 个控制样本 → {self.path}")
+
+
 class PiperEEFInference:
     """Piper 末端位姿推理主循环 (receding horizon control)。"""
 
@@ -591,6 +824,11 @@ class PiperEEFInference:
             "<control mode> end effector <control mode>pick up the black block and place it into the cup."
         ),
         interactive: bool = False,
+        model_action_frame: str = "robot_absolute",
+        legacy_pick_cube_tcp: bool = False,
+        pico_reference_pose: Optional[np.ndarray] = None,
+        model_gripper_range: Optional[tuple[float, float]] = None,
+        trajectory_log: Optional[str] = None,
     ):
         self._action_horizon = action_horizon
         self._exec_horizon = exec_horizon
@@ -600,6 +838,26 @@ class PiperEEFInference:
         self._use_interp = interp_freq is not None
         self._default_prompt = default_prompt
         self._interactive = interactive
+        if model_action_frame not in {"robot_absolute", "chunk_relative", "tcp", "pico", "pico_absolute", "tcp_absolute"}:
+            raise ValueError(f"无效 model_action_frame: {model_action_frame!r}")
+        self._model_action_frame = model_action_frame
+        self._legacy_pick_cube_tcp = bool(legacy_pick_cube_tcp)
+        if self._model_action_frame in {"chunk_relative", "pico", "pico_absolute", "tcp_absolute"} and self._legacy_pick_cube_tcp:
+            raise ValueError(
+                "model_action_frame='pico' 与 legacy_pick_cube_tcp 不能同时启用"
+            )
+        self._pico_reference_pose = (
+            None if pico_reference_pose is None else np.asarray(pico_reference_pose, dtype=np.float64)
+        )
+        if self._model_action_frame in {"pico_absolute", "tcp_absolute"}:
+            if self._pico_reference_pose is None or self._pico_reference_pose.shape != (6,):
+                raise ValueError("绝对位姿模式需要 6 维初始位姿")
+            if model_gripper_range is None or model_gripper_range[1] <= model_gripper_range[0]:
+                raise ValueError("绝对位姿模式需要有效的训练数据夹爪范围")
+        self._model_gripper_range = model_gripper_range
+        self._trajectory_recorder = (
+            None if trajectory_log is None else _RealRobotTrajectoryRecorder(trajectory_log)
+        )
         self._period = 1.0 / CONTROL_FREQ
         self._gripper_open_width_mm = float(gripper_open_width_mm)
         self._gripper_binary_threshold_mm = (
@@ -647,6 +905,7 @@ class PiperEEFInference:
         # 相机: 基座 = RealSense (D435i)，腕部 = USB 摄像头 (OpenCV)
         self._camera = create_cameras(
             base_serial=rs2_base_serial,
+            base_rs_size=(1280, 720),  # 与 pick_cube 数据集的 base 图像分辨率一致
             base_cv_id=cv_base_id,
             wrist_cv_id=cv_wrist_id,
             wrist_cv_exposure=wrist_exposure,
@@ -661,6 +920,46 @@ class PiperEEFInference:
         self._action_cache: Optional[np.ndarray] = None  # (action_horizon, 7)
         self._cache_step = 0
         self._robot_tcp0: Optional[np.ndarray] = None
+        self._chunk_tcp_base: Optional[np.ndarray] = None
+
+    def _runtime_pose_to_model_pose(self, pose: np.ndarray) -> np.ndarray:
+        """Map a robot-TCP relative pose into the training pose frame."""
+        converted = np.asarray(pose, dtype=np.float64).copy()
+        if getattr(self, "_model_action_frame", "tcp") == "tcp_absolute":
+            return _compose_pose6(self._pico_reference_pose, converted)
+        if getattr(self, "_model_action_frame", "tcp") in {"pico", "pico_absolute"}:
+            converted = tcp_relative_actions_to_pico_relative(converted)
+            if self._model_action_frame == "pico_absolute":
+                converted[:6] = _compose_pose6(self._pico_reference_pose, converted[:6])
+            return converted
+        if self._legacy_pick_cube_tcp:
+            return _conjugate_pose6(PICK_CUBE_OLD_TO_CURRENT_TCP, converted)
+        return converted
+
+    def _model_pose_to_runtime_pose(self, pose: np.ndarray) -> np.ndarray:
+        """Map a model target into the current robot-TCP relative frame."""
+        converted = np.asarray(pose, dtype=np.float64).copy()
+        if getattr(self, "_model_action_frame", "tcp") == "tcp_absolute":
+            return _relative_pose6(self._pico_reference_pose, converted)
+        if getattr(self, "_model_action_frame", "tcp") in {"pico", "pico_absolute"}:
+            if self._model_action_frame == "pico_absolute":
+                converted[:6] = _relative_pose6(self._pico_reference_pose, converted[:6])
+            return pico_relative_actions_to_tcp_relative(converted)
+        if self._legacy_pick_cube_tcp:
+            return _conjugate_pose6(np.linalg.inv(PICK_CUBE_OLD_TO_CURRENT_TCP), converted)
+        return converted
+
+    def _runtime_gripper_to_model(self, width_mm: float) -> float:
+        if self._model_gripper_range is None:
+            return width_mm
+        closed, opened = self._model_gripper_range
+        return closed + np.clip(width_mm / self._gripper_open_width_mm, 0.0, 1.0) * (opened - closed)
+
+    def _model_gripper_to_runtime(self, width: float) -> float:
+        if self._model_gripper_range is None:
+            return width
+        closed, opened = self._model_gripper_range
+        return (width - closed) / (opened - closed) * self._gripper_open_width_mm
 
     # ======================== 运行 ========================
 
@@ -668,6 +967,15 @@ class PiperEEFInference:
         print("=" * 60)
         print("Piper EEF 推理客户端 (策略服务器模式)")
         print(f"服务器:         {self._policy_host}:{self._policy_port}")
+        print(f"模型动作坐标系: {self._model_action_frame.upper()}")
+        print(
+            "TCP 兼容模式:    "
+            + ("旧 pick_cube → 当前 TCP (SE(3) 共轭)" if self._legacy_pick_cube_tcp else "关闭")
+        )
+        print(
+            "轨迹记录:       "
+            + (str(self._trajectory_recorder.path) if self._trajectory_recorder is not None else "关闭")
+        )
         print(
             f"控制频率:       {CONTROL_FREQ} Hz "
             f"(期望动作块 {self._action_horizon} 步, 每块最多执行 {self._exec_horizon} 步)"
@@ -712,11 +1020,23 @@ class PiperEEFInference:
         except KeyboardInterrupt:
             print("\n[INFO] 中断信号，退出中...")
         finally:
+            self._save_trajectory_log()
             if self._camera:
                 self._camera.stop()
             cv2.destroyAllWindows()
-            self._robot.close_gripper_transport()
-            print("[INFO] 已退出 (机械臂保持使能)")
+            print("[INFO] 已退出 (机械臂和夹爪保持使能)")
+
+    def _save_trajectory_log(self) -> None:
+        if self._trajectory_recorder is None:
+            return
+        try:
+            self._trajectory_recorder.save(
+                legacy_pick_cube_tcp=self._legacy_pick_cube_tcp,
+                prompt=self._default_prompt,
+                model_action_frame=self._model_action_frame,
+            )
+        except Exception as exc:
+            print(f"[Trajectory] 保存失败: {exc}")
 
     def _connect_policy(self):
         print(f"[Policy] 正在连接 ws://{self._policy_host}:{self._policy_port} ...")
@@ -766,18 +1086,50 @@ class PiperEEFInference:
                 idx = min(self._cache_step, self._action_cache.shape[0] - 1)
                 action = self._action_cache[idx]  # (7,) [x,y,z,rotvec,gripper_mm]
 
-                # 策略输出是 episode 初始 TCP 坐标系中的目标 D(t)。映射到
-                # Robot Base: ^B T_target = ^B T_R(0) @ D(t)。
-                if self._robot_tcp0 is None:
-                    raise RuntimeError("episode robot TCP reference is not initialized")
-                target_pose = _compose_pose6(self._robot_tcp0, action[:6])
+                if self._model_action_frame == "chunk_relative":
+                    if self._chunk_tcp_base is None:
+                        raise RuntimeError("chunk TCP base was not captured with the observation")
+                    runtime_target = action[:6].astype(np.float64)
+                    target_pose = _compose_pose6(self._chunk_tcp_base, runtime_target)
+                elif self._model_action_frame == "robot_absolute":
+                    target_pose = action[:6].astype(np.float64)
+                    runtime_target = (
+                        _relative_pose6(self._robot_tcp0, target_pose)
+                        if self._robot_tcp0 is not None else target_pose.copy()
+                    )
+                else:
+                    if self._robot_tcp0 is None:
+                        raise RuntimeError("episode robot TCP reference is not initialized")
+                    runtime_target = self._model_pose_to_runtime_pose(action[:6])
+                    target_pose = _compose_pose6(self._robot_tcp0, runtime_target)
                 predicted_gripper_mm = float(action[6])
-                scaled_gripper_mm = predicted_gripper_mm * self._gripper_prediction_scale
+                scaled_gripper_mm = (
+                    self._model_gripper_to_runtime(predicted_gripper_mm) * self._gripper_prediction_scale
+                )
                 gripper_mm = self._gripper_command(scaled_gripper_mm)
 
                 if cur_pose is None:
                     cur_pose = self._robot.get_eef_pose()
+                command_time = time.monotonic()
                 self._send_eef_cmd(cur_pose, target_pose, gripper_mm, data_dt)
+                if self._trajectory_recorder is not None:
+                    try:
+                        measured_tcp = self._robot.get_eef_pose().astype(np.float64)
+                    except Exception as exc:
+                        print(f"[Trajectory] TCP 读回失败，当前样本记为 NaN: {exc}")
+                        measured_tcp = np.full(6, np.nan, dtype=np.float64)
+                    measurement_time = time.monotonic()
+                    self._trajectory_recorder.record(
+                        action_index=idx,
+                        command_time=command_time,
+                        model_action=action,
+                        runtime_relative_target=runtime_target,
+                        base_target_tcp=target_pose,
+                        scaled_gripper_mm=scaled_gripper_mm,
+                        command_gripper_mm=gripper_mm,
+                        measured_tcp=measured_tcp,
+                        measurement_time=measurement_time,
+                    )
                 cur_pose = target_pose.copy()
 
                 self._cache_step += 1
@@ -878,9 +1230,11 @@ class PiperEEFInference:
             actions = np.asarray(result["actions"], dtype=np.float32)
             if actions.ndim != 2 or actions.shape[0] == 0 or actions.shape[1] < 7:
                 raise ValueError(f"策略 actions 形状应为 (N, >=7)，实际为 {actions.shape}")
-            self._action_cache = actions[:, :7]
+            self._action_cache = _execution_actions(actions, self._model_action_frame)[:, :7]
             grip = self._action_cache[:, 6]
-            scaled_grip = grip * self._gripper_prediction_scale
+            scaled_grip = np.array(
+                [self._model_gripper_to_runtime(float(value)) for value in grip]
+            ) * self._gripper_prediction_scale
             execute_steps = min(self._exec_horizon, self._action_cache.shape[0])
             executed_scaled_grip = scaled_grip[:execute_steps]
             mode_info = ""
@@ -917,12 +1271,17 @@ class PiperEEFInference:
                 self._inferring = False
 
     def _build_observation(self) -> dict:
-        """构建 episode 初始 TCP 坐标系中的观测。"""
-        state = self._robot.get_state()  # absolute Robot-Base TCP pose + gripper
-        if self._robot_tcp0 is None:
-            raise RuntimeError("episode robot TCP reference is not initialized")
-        state = state.copy()
-        state[:6] = _relative_pose6(self._robot_tcp0, state[:6])
+        """构建与训练数据同坐标系的当前观测。"""
+        state = self._robot.get_state().copy()  # Robot Base TCP pose + gripper
+        if self._model_action_frame == "chunk_relative":
+            self._chunk_tcp_base = state[:6].astype(np.float64).copy()
+            state = state[6:7]
+        elif self._model_action_frame != "robot_absolute":
+            if self._robot_tcp0 is None:
+                raise RuntimeError("episode robot TCP reference is not initialized")
+            state[:6] = _relative_pose6(self._robot_tcp0, state[:6])
+            state[:6] = self._runtime_pose_to_model_pose(state[:6])
+            state[6] = self._runtime_gripper_to_model(float(state[6]))
 
         base_image = np.zeros((224, 224, 3), dtype=np.uint8)
         wrist_image = base_image.copy()
@@ -952,6 +1311,8 @@ class PiperEEFInference:
             if not self._inferring:
                 print("[Control] 开始推理...")
                 self._robot_tcp0 = self._robot.get_eef_pose().astype(np.float64)
+                if self._trajectory_recorder is not None:
+                    self._trajectory_recorder.begin_episode(self._robot_tcp0)
                 self._action_cache = None
                 self._cache_step = 0
                 self._inferring = True
@@ -960,6 +1321,7 @@ class PiperEEFInference:
             self._inferring = False
             self._action_cache = None
             self._cache_step = 0
+            self._save_trajectory_log()
         elif cmd == "quit":
             self._running = False
         elif cmd == "open_gripper":
@@ -967,13 +1329,18 @@ class PiperEEFInference:
             self._inferring = False
             self._action_cache = None
             self._cache_step = 0
+            self._save_trajectory_log()
             print(f"[Control] 暂停推理并手动开爪 (command={self._gripper_open_width_mm:.1f}mm)")
             self._robot.send_gripper_command(self._gripper_open_width_mm)
         elif cmd == "reset":
             was_inferring = self._inferring
             self._inferring = False
+            if was_inferring:
+                self._save_trajectory_log()
             self._robot.go_to_init_pose()
             self._robot_tcp0 = self._robot.get_eef_pose().astype(np.float64)
+            if was_inferring and self._trajectory_recorder is not None:
+                self._trajectory_recorder.begin_episode(self._robot_tcp0)
             self._action_cache = None
             self._cache_step = 0
             self._inferring = was_inferring
@@ -1015,11 +1382,15 @@ class PiperEEFDatasetEval:
         - 不连接真实机械臂 / 相机，state 与图像直接取自数据集。
         - 支持闭环 (预测位姿反馈，默认) / 开环 (每步用真值位姿) 两种 rollout。
         - 可视化末端位姿 (3D 位置轨迹 + 朝向 triad + 夹爪 + 误差)，可导出 GIF。
-        - 可用 --init_pose 人工设置初始末端位姿 (覆盖数据集首帧 state)。
+        - ``--init_pose`` 覆盖模型的 episode-relative 初始 state。
+        - ``--tcp_start_pose`` 把输出轨迹锚定到 Robot Base 下的真实 TCP 起点，
+          不改变送入模型的相对状态。
 
     用法:
         python examples/piper/inference_eef.py --dataset ./pick_place --episode 0 --gif eval.gif
         python examples/piper/inference_eef.py --dataset ./pick_place --init_pose 0.0 -0.7 -0.4 0 0 0
+        python examples/piper/inference_eef.py --dataset ./pick_cube --episode 0 \
+            --legacy_pick_cube_tcp --tcp_start_pose 0.35 0.0 0.25 0.0 1.57 0.0
     """
 
     def __init__(
@@ -1029,6 +1400,9 @@ class PiperEEFDatasetEval:
         port: int = 8000,
         episode: Optional[int] = None,
         init_pose: Optional[np.ndarray] = None,
+        tcp_start_pose: Optional[np.ndarray] = None,
+        model_action_frame: str = "robot_absolute",
+        legacy_pick_cube_tcp: bool = False,
         action_horizon: int = DEFAULT_ACTION_HORIZON,
         exec_horizon: int = DEFAULT_EXEC_HORIZON,
         closed_loop: bool = True,
@@ -1048,6 +1422,24 @@ class PiperEEFDatasetEval:
         self._port = port
         self._episode = episode
         self._init_pose = None if init_pose is None else np.asarray(init_pose, dtype=np.float64)
+        self._tcp_start_pose = (
+            None if tcp_start_pose is None else np.asarray(tcp_start_pose, dtype=np.float64)
+        )
+        if self._tcp_start_pose is not None and self._tcp_start_pose.shape != (6,):
+            raise ValueError(
+                "tcp_start_pose 必须是 6 维 [x y z rx ry rz]，"
+                f"实际为 {self._tcp_start_pose.shape}"
+            )
+        if model_action_frame not in {"robot_absolute", "chunk_relative", "tcp", "pico", "pico_absolute", "tcp_absolute"}:
+            raise ValueError(
+                f"model_action_frame 必须为 'tcp' 或 'pico'，实际为 {model_action_frame!r}"
+            )
+        self._model_action_frame = model_action_frame
+        self._legacy_pick_cube_tcp = bool(legacy_pick_cube_tcp)
+        if self._model_action_frame in {"chunk_relative", "pico", "pico_absolute", "tcp_absolute"} and self._legacy_pick_cube_tcp:
+            raise ValueError(
+                "model_action_frame='pico' 与 legacy_pick_cube_tcp 不能同时启用"
+            )
         self._action_horizon = action_horizon
         self._exec_horizon = exec_horizon
         self._closed_loop = closed_loop
@@ -1093,12 +1485,34 @@ class PiperEEFDatasetEval:
         print(f"Episode:  {ep} ({len(df)} 帧)")
         print(f"任务:     {self._prompt or '(无)'}")
         print(f"Rollout:  {'闭环 (预测位姿反馈)' if self._closed_loop else '开环 (真值位姿)'}")
+        print(f"模型动作坐标系: {self._model_action_frame.upper()}")
+        print(
+            "TCP frame: "
+            + ("旧 pick_cube 模型 → 当前机器人 TCP" if self._legacy_pick_cube_tcp else "当前机器人 TCP")
+        )
+        if self._tcp_start_pose is not None:
+            print(f"TCP 起点: Robot Base {self._tcp_start_pose}")
+            print("目标关系: ^B T_target(t) = ^B T_start @ D_current(t)")
+        else:
+            print("TCP 起点: 未设置；显示 episode-relative 轨迹")
         print(f"服务器:   ws://{self._host}:{self._port}")
         print("=" * 60)
 
         self._connect_policy()
 
-        pred, states, gt = self._rollout(df)
+        model_pred, model_states, model_gt = self._rollout(df)
+        transform_kwargs = {
+            "pico_reference_pose": (
+                np.asarray(df["state"].iloc[0], dtype=np.float64)[:6]
+                if self._model_action_frame in {"pico_absolute", "tcp_absolute"} else None
+            ),
+            "model_action_frame": self._model_action_frame,
+            "legacy_pick_cube_tcp": self._legacy_pick_cube_tcp,
+            "tcp_start_pose": self._tcp_start_pose,
+        }
+        pred = _episode_poses_to_runtime(model_pred, **transform_kwargs)
+        states = _episode_poses_to_runtime(model_states, **transform_kwargs)
+        gt = _episode_poses_to_runtime(model_gt, **transform_kwargs)
         pos_err, rot_err, grip_err = self._compute_metrics(pred, gt)
 
         print("-" * 60)
@@ -1157,14 +1571,21 @@ class PiperEEFDatasetEval:
         - predicted: (n,7) 模型预测的绝对目标位姿。
         """
         n = len(df)
-        states = np.stack(df["state"].values).astype(np.float64)  # (n,7)
-        gt = np.stack(df["actions"].values).astype(np.float64)  # (n,7)
+        states = np.stack(df["state"].values).astype(np.float64)
+        gt = np.stack(df["actions"].values).astype(np.float64)
+        if self._model_action_frame == "chunk_relative":
+            if states.shape != (n, 1) or gt.shape != (n, 7):
+                raise ValueError("chunk_relative dataset needs state (1,) and absolute action (7,)")
+            states = gt.copy()  # Same-frame TCP for offline visualization only.
+            gt = np.concatenate([gt[1:], gt[-1:]], axis=0)
+        elif self._model_action_frame in {"pico_absolute", "tcp_absolute"}:
+            gt = np.concatenate([gt[1:], gt[-1:]], axis=0)
 
         if self._init_pose is not None:
             pose = self._init_pose.copy()
             if pose.shape[0] == 6:
-                pose = np.concatenate([pose, [gt[0, 6]]])
-            print(f"[Eval] 使用人工初始位姿: {pose}")
+                pose = np.concatenate([pose, [states[0, 6]]])
+            print(f"[Eval] 使用人工模型相对初始 state: {pose}")
         else:
             pose = states[0].copy()
 
@@ -1181,12 +1602,18 @@ class PiperEEFDatasetEval:
                 base = _resize_pad_rgb(_decode_image(df.iloc[t], "image"))
                 wrist = _resize_pad_rgb(_decode_image(df.iloc[t], "wrist_image"))
                 try:
-                    result = self._policy_client.infer(self._build_observation(pose, base, wrist))
+                    policy_state = pose[6:7] if self._model_action_frame == "chunk_relative" else pose
+                    result = self._policy_client.infer(self._build_observation(policy_state, base, wrist))
                 except Exception as e:
                     print(f"[Policy] 查询失败 (frame {t}): {e}，重连...")
                     self._connect_policy()
-                    result = self._policy_client.infer(self._build_observation(pose, base, wrist))
+                    result = self._policy_client.infer(self._build_observation(policy_state, base, wrist))
                 cache = np.asarray(result["actions"], dtype=np.float64)  # (H,7)
+                cache = _execution_actions(cache, self._model_action_frame)
+                if self._model_action_frame == "chunk_relative":
+                    cache = cache.copy()
+                    for action in cache:
+                        action[:6] = _compose_pose6(pose[:6], action[:6])
                 cache_step = 0
                 if t % 50 == 0 or t == n - 1:
                     print(f"  [Policy] frame {t}: 查询完成 (chunk={cache.shape[0]} 步)")
@@ -1425,10 +1852,51 @@ def _parse_args(parser=None):
     )
     p.add_argument(
         "--prompt",
-        default="<control mode> end effector <control mode>pick up the red bottle cap and place it into the cup.",
+        default="<control mode> end effector <control mode>pick up the blue cube and place it on the yellow cube.",
         help="语言指令。评测模式默认读数据集 tasks.jsonl；推理模式默认用内置指令。",
     )
     p.add_argument("--interactive", action="store_true", help="交互模式: 每次推理前手动输入指令")
+    p.add_argument(
+        "--model_action_frame",
+        choices=("robot_absolute", "chunk_relative", "tcp", "pico", "pico_absolute", "tcp_absolute"),
+        default="robot_absolute",
+        help=(
+            "模型 state/actions 的坐标系（默认: Robot Base 下的绝对 TCP）。"
+            "每个动作块首帧为基准、state 只有夹爪时选 chunk_relative；"
+            "使用 data/tcp_relative_action 训练时保持 tcp；"
+            "PICO-relative 标签选 pico；绝对 PICO 控制器位姿选 pico_absolute；"
+            "data/tcp_action 导出的绝对 TCP 位姿选 tcp_absolute"
+        ),
+    )
+    p.add_argument(
+        "--absolute_pose_dataset", "--raw_pico_dataset",
+        dest="raw_pico_dataset",
+        metavar="DATASET",
+        default=None,
+        help="真机绝对位姿模式的训练数据集路径；读取首帧位姿和夹爪范围",
+    )
+    p.add_argument(
+        "--reference_episode", "--raw_pico_episode", dest="raw_pico_episode",
+        type=int, default=0, metavar="EPISODE",
+        help="真机绝对位姿模式的参考 episode 编号 (默认: 0)",
+    )
+    p.add_argument(
+        "--legacy_pick_cube_tcp",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "兼容由旧 pico_arm_transform.py 转换并训练的 pick_cube 模型："
+            "在当前机器人 TCP 与旧模型 TCP 之间做完整 SE(3) 共轭变换"
+        ),
+    )
+    p.add_argument(
+        "--trajectory_log",
+        default=None,
+        help=(
+            "仅真机推理：保存每步模型目标、Base 目标和机械臂实际 TCP 到 .npz；"
+            "为避免误覆盖，目标文件必须不存在"
+        ),
+    )
     p.add_argument(
         "--max_pos_speed",
         type=float,
@@ -1474,14 +1942,14 @@ def _parse_args(parser=None):
     p.add_argument(
         "--gripper_prediction_scale",
         type=float,
-        default=GRIPPER_PREDICTION_SCALE,
-        help=f"策略夹爪预测值的缩放系数，在生成控制命令前相乘 (默认: {GRIPPER_PREDICTION_SCALE})",
+        default=None,
+        help=f"策略夹爪预测值的额外缩放；绝对位姿模式默认 1，其他模式默认 {GRIPPER_PREDICTION_SCALE}",
     )
     p.add_argument(
         "--binary_gripper",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="启用夹爪二值控制；使用 --no-binary_gripper 切换为连续控制 (默认: 启用)",
+        default=None,
+        help="启用夹爪二值控制；chunk_relative 默认连续，其他模式默认二值",
     )
     p.add_argument(
         "--gripper_current",
@@ -1510,8 +1978,21 @@ def _parse_args(parser=None):
         nargs="+",
         default=None,
         metavar="P",
-        help="人工设置初始末端位姿 [x y z rx ry rz (gripper_mm)] (6 或 7 个值，"
-        "覆盖数据集首帧 state；仅闭环 rollout 生效)",
+        help=(
+            "人工设置模型初始 state [x y z rx ry rz (gripper)]；坐标系与训练数据一致。 "
+            "(6 或 7 个值；仅闭环 rollout 生效)。这不是 Robot Base 绝对位姿"
+        ),
+    )
+    p.add_argument(
+        "--tcp_start_pose",
+        type=float,
+        nargs=6,
+        default=None,
+        metavar=("X", "Y", "Z", "RX", "RY", "RZ"),
+        help=(
+            "仅离线评测：Robot Base 下的 episode 初始 TCP "
+            "[x y z(m) rx ry rz(rotvec rad)]；输出用 T_start @ D(t) 显示/评估"
+        ),
     )
     p.add_argument("--open_loop", action="store_true", help="开环评测 (每步用数据集真值位姿作为 state，默认闭环)")
     p.add_argument("--max_frames", type=int, default=0, help="最多评测多少帧 (默认 0=全部)")
@@ -1524,8 +2005,26 @@ def main(args=None):
     if args is None:
         args = _parse_args()
 
+    if args.model_action_frame in {"chunk_relative", "pico", "pico_absolute", "tcp_absolute"} and args.legacy_pick_cube_tcp:
+        print("[ERROR] PICO 模式与 --legacy_pick_cube_tcp 不能同时启用")
+        return
+
+    if (
+        args.dataset is None
+        and args.model_action_frame in {"pico_absolute", "tcp_absolute"}
+        and not args.raw_pico_dataset
+    ):
+        print("[ERROR] 真机绝对位姿模式需要 --absolute_pose_dataset")
+        return
+    if args.dataset and args.raw_pico_dataset:
+        print("[ERROR] 离线评测用 --dataset 即可，不需要 --absolute_pose_dataset")
+        return
+
     # 数据集离线评测模式 (不连接真实机械臂 / 相机)
     if args.dataset:
+        if args.trajectory_log is not None:
+            print("[ERROR] --trajectory_log 仅用于真机推理，离线模式请使用 --gif")
+            return
         init_pose = None
         if args.init_pose:
             init_pose = np.asarray(args.init_pose, dtype=np.float64)
@@ -1538,6 +2037,9 @@ def main(args=None):
             port=args.port,
             episode=args.episode,
             init_pose=init_pose,
+            tcp_start_pose=args.tcp_start_pose,
+            model_action_frame=args.model_action_frame,
+            legacy_pick_cube_tcp=args.legacy_pick_cube_tcp,
             action_horizon=args.action_horizon,
             exec_horizon=args.exec_horizon,
             closed_loop=not args.open_loop,
@@ -1549,6 +2051,20 @@ def main(args=None):
         )
         evaluator.run()
         return
+
+    if args.tcp_start_pose is not None:
+        print("[ERROR] --tcp_start_pose 仅用于带 --dataset 的离线评测模式")
+        return
+
+    pico_reference_pose = None
+    model_gripper_range = None
+    if args.model_action_frame in {"pico_absolute", "tcp_absolute"}:
+        pico_reference_pose, model_gripper_range = _load_raw_pico_reference(
+            args.raw_pico_dataset, args.raw_pico_episode,
+            pose_frame="pico_world_tcp" if args.model_action_frame == "tcp_absolute" else "pico_teleop",
+        )
+        print(f"[Pose] 参考 episode {args.raw_pico_episode} 首帧位姿: {pico_reference_pose}")
+        print(f"[Pose] 训练夹爪范围: {model_gripper_range} -> 机器人 0..{args.gripper_open_width_mm:g} mm")
 
     inference = PiperEEFInference(
         host=args.host,
@@ -1568,13 +2084,29 @@ def main(args=None):
         gripper_port=args.gripper_port or None,
         gripper_close_rad=args.gripper_close_rad,
         gripper_open_width_mm=args.gripper_open_width_mm,
-        gripper_binary_threshold_mm=args.gripper_binary_threshold_mm,
-        gripper_prediction_scale=args.gripper_prediction_scale,
-        binary_gripper=args.binary_gripper,
+        gripper_binary_threshold_mm=(
+            args.gripper_binary_threshold_mm if args.gripper_binary_threshold_mm is not None
+            else args.gripper_open_width_mm / 2 if args.model_action_frame in {"pico_absolute", "tcp_absolute"}
+            else None
+        ),
+        gripper_prediction_scale=(
+            args.gripper_prediction_scale if args.gripper_prediction_scale is not None
+            else 1.0 if args.model_action_frame in {"chunk_relative", "pico_absolute", "tcp_absolute"}
+            else GRIPPER_PREDICTION_SCALE
+        ),
+        binary_gripper=(
+            args.binary_gripper if args.binary_gripper is not None
+            else args.model_action_frame != "chunk_relative"
+        ),
         gripper_current=args.gripper_current,
         gripper_speed=args.gripper_speed,
         default_prompt=args.prompt or DEFAULT_PROMPT,
         interactive=args.interactive,
+        model_action_frame=args.model_action_frame,
+        legacy_pick_cube_tcp=args.legacy_pick_cube_tcp,
+        pico_reference_pose=pico_reference_pose,
+        model_gripper_range=model_gripper_range,
+        trajectory_log=args.trajectory_log,
     )
     inference.run()
 

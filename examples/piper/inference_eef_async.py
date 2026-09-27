@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Piper EEF 异步推理客户端。
 
-沿用 inference_eef.py 的观测格式、相机及夹爪控制：观测和策略动作都表达在
-episode 初始机器人 TCP 坐标系中，不执行 PICO/机械臂坐标转换或额外的
-frame_rotation。推理线程按 --inference_rate 查询策略服务器；主线程按
+沿用 inference_eef.py 的观测格式、相机及夹爪控制：默认直接使用
+Robot Base 坐标系下的绝对 TCP 位姿，不执行 PICO/机械臂坐标转换。推理线程按 --inference_rate 查询策略服务器；主线程按
 CONTROL_FREQ 执行动作。新动作块按观测之后已经执行的步数跳过过期前缀，并与
 缓冲区的剩余动作平滑衔接。
 
@@ -30,7 +29,7 @@ from scipy.spatial.transform import Rotation
 
 
 class EEFActionBuffer:
-    """保存尚未执行的 episode-relative EEF 目标，跨线程替换并平滑动作块。"""
+    """保存尚未执行的 EEF 目标，跨线程替换并平滑动作块。"""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -133,6 +132,7 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
         print("=" * 60)
         print("Piper EEF 异步推理客户端")
         print(f"服务器:         {self._policy_host}:{self._policy_port}")
+        print(f"模型动作坐标系: {self._model_action_frame.upper()}")
         print(f"控制频率:       {eef.CONTROL_FREQ} Hz")
         print(f"推理频率上限:   {self._inference_rate:g} Hz")
         print(f"动作块上限:     {min(self._action_horizon, self._exec_horizon)} 步")
@@ -174,11 +174,8 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
                 if self._camera and camera_started:
                     self._camera.stop()
             finally:
-                try:
-                    cv2.destroyAllWindows()
-                finally:
-                    self._robot.close_gripper_transport()
-                    print("[INFO] 已退出 (机械臂保持使能)")
+                cv2.destroyAllWindows()
+                print("[INFO] 已退出 (机械臂和夹爪保持使能)")
 
     def _inference_loop(self):
         period = 1.0 / self._inference_rate
@@ -200,13 +197,22 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
                             continue
                     observed_step = self._buffer.executed_steps()
                     observation = self._build_observation()
+                    chunk_tcp_base = (
+                        self._chunk_tcp_base.copy() if self._model_action_frame == "chunk_relative" else None
+                    )
                 with self._state_lock:
                     if not self._inferring or generation != self._generation:
                         continue
                 observed_at = time.monotonic()
                 result = self._policy_client.infer(observation)
                 actions = np.asarray(result["actions"], dtype=np.float64)
+                actions = eef._execution_actions(actions, self._model_action_frame)
                 actions = actions[: min(self._action_horizon, self._exec_horizon)]
+                if chunk_tcp_base is not None:
+                    # Buffer entries must share Robot Base coordinates before blending chunks.
+                    actions = actions.copy()
+                    for action in actions:
+                        action[:6] = eef._compose_pose6(chunk_tcp_base, action[:6])
                 with self._state_lock:
                     if self._inferring and generation == self._generation:
                         dropped, buffered = self._buffer.integrate_new_chunk(
@@ -308,11 +314,16 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
     def _publish_action(
         self, action: np.ndarray, current_pose: np.ndarray, generation: int
     ) -> Optional[np.ndarray]:
-        # 模型输出是 episode 初始 TCP 坐标系中的目标，映射回 Robot Base。
-        if self._robot_tcp0 is None:
-            raise RuntimeError("episode robot TCP reference is not initialized")
-        target_pose = eef._compose_pose6(self._robot_tcp0, action[:6])
-        gripper_mm = float(action[6])
+        if self._model_action_frame in {"robot_absolute", "chunk_relative"}:
+            target_pose = np.asarray(action[:6], dtype=np.float64)
+        else:
+            if self._robot_tcp0 is None:
+                raise RuntimeError("episode robot TCP reference is not initialized")
+            runtime_target = self._model_pose_to_runtime_pose(action[:6])
+            target_pose = eef._compose_pose6(self._robot_tcp0, runtime_target)
+        gripper_mm = self._gripper_command(
+            self._model_gripper_to_runtime(float(action[6])) * self._gripper_prediction_scale
+        )
 
         if not self._use_interp:
             with self._robot_lock:
@@ -388,12 +399,17 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
             self._shutdown.wait(timeout=max(0.0, self._period - (time.monotonic() - started)))
 
     def _build_observation(self) -> dict:
-        """构建 episode 初始 TCP 坐标系中的观测。"""
-        state = self._robot.get_state()
-        if self._robot_tcp0 is None:
-            raise RuntimeError("episode robot TCP reference is not initialized")
-        state = state.copy()
-        state[:6] = eef._relative_pose6(self._robot_tcp0, state[:6])
+        """构建与训练数据同坐标系的当前观测。"""
+        state = self._robot.get_state().copy()
+        if self._model_action_frame == "chunk_relative":
+            self._chunk_tcp_base = state[:6].astype(np.float64).copy()
+            state = state[6:7]
+        elif self._model_action_frame != "robot_absolute":
+            if self._robot_tcp0 is None:
+                raise RuntimeError("episode robot TCP reference is not initialized")
+            state[:6] = eef._relative_pose6(self._robot_tcp0, state[:6])
+            state[:6] = self._runtime_pose_to_model_pose(state[:6])
+            state[6] = self._runtime_gripper_to_model(float(state[6]))
 
         base_image = np.zeros((224, 224, 3), dtype=np.uint8)
         wrist_image = base_image.copy()
@@ -425,6 +441,18 @@ def main():
     if args.inference_rate <= 0 or args.latency_k < 0 or args.min_smooth_steps < 1:
         parser.error("--inference_rate / --min_smooth_steps 必须大于 0，--latency_k 必须非负")
 
+    if args.model_action_frame in {"pico_absolute", "tcp_absolute"} and not args.raw_pico_dataset:
+        parser.error("真机绝对位姿模式需要 --absolute_pose_dataset")
+    if args.model_action_frame in {"pico", "pico_absolute", "tcp_absolute"} and args.legacy_pick_cube_tcp:
+        parser.error("PICO 模式不能与 --legacy_pick_cube_tcp 同时使用")
+    pico_reference_pose = None
+    model_gripper_range = None
+    if args.model_action_frame in {"pico_absolute", "tcp_absolute"}:
+        pico_reference_pose, model_gripper_range = eef._load_raw_pico_reference(
+            args.raw_pico_dataset, args.raw_pico_episode,
+            pose_frame="pico_world_tcp" if args.model_action_frame == "tcp_absolute" else "pico_teleop",
+        )
+
     inference = PiperEEFAsyncInference(
         host=args.host,
         port=args.port,
@@ -442,10 +470,28 @@ def main():
         gripper_port=args.gripper_port or None,
         gripper_close_rad=args.gripper_close_rad,
         gripper_open_width_mm=args.gripper_open_width_mm,
+        gripper_binary_threshold_mm=(
+            args.gripper_binary_threshold_mm if args.gripper_binary_threshold_mm is not None
+            else args.gripper_open_width_mm / 2 if args.model_action_frame in {"pico_absolute", "tcp_absolute"}
+            else None
+        ),
+        gripper_prediction_scale=(
+            args.gripper_prediction_scale if args.gripper_prediction_scale is not None
+            else 1.0 if args.model_action_frame in {"chunk_relative", "pico_absolute", "tcp_absolute"}
+            else eef.GRIPPER_PREDICTION_SCALE
+        ),
+        binary_gripper=(
+            args.binary_gripper if args.binary_gripper is not None
+            else args.model_action_frame != "chunk_relative"
+        ),
         gripper_current=args.gripper_current,
         gripper_speed=args.gripper_speed,
         default_prompt=args.prompt or eef.DEFAULT_PROMPT,
         interactive=args.interactive,
+        model_action_frame=args.model_action_frame,
+        legacy_pick_cube_tcp=args.legacy_pick_cube_tcp,
+        pico_reference_pose=pico_reference_pose,
+        model_gripper_range=model_gripper_range,
         inference_rate=args.inference_rate,
         latency_k=args.latency_k,
         min_smooth_steps=args.min_smooth_steps,
