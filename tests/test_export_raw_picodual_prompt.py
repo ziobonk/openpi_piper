@@ -32,3 +32,25 @@ def test_prompt_only_changes_both_task_metadata_files(tmp_path, monkeypatch):
     assert task == {"task_index": 0, "task": "pick up the blue cube"}
     assert all(row["tasks"] == ["pick up the blue cube"] for row in updated_episodes)
     assert data_file.read_bytes() == b"existing image and action data"
+
+
+def test_missing_template_builds_directly_from_source_with_task(tmp_path, monkeypatch):
+    import numpy as np
+
+    raw = np.zeros((2, 7), dtype=np.float32)
+    ends = np.array([2], dtype=np.int64)
+    monkeypatch.setattr(exporter, "read_numeric_array", lambda path: ends if path.name == "episode_ends" else raw)
+    calls = []
+    monkeypatch.setattr(exporter, "export_from_source", lambda args, actions, episode_ends, task: calls.append(
+        (task, actions.copy(), episode_ends.copy())
+    ))
+    monkeypatch.setattr(sys, "argv", [
+        "export_raw_picodual_action.py", "--input", str(tmp_path / "pick.zarr"),
+        "--template", str(tmp_path / "missing_template"),
+        "--output", str(tmp_path / "new_dataset"), "--task", "pick up the blue cube",
+    ])
+    exporter.main()
+    assert len(calls) == 1
+    assert calls[0][0] == "pick up the blue cube"
+    np.testing.assert_array_equal(calls[0][1], raw)
+    np.testing.assert_array_equal(calls[0][2], ends)

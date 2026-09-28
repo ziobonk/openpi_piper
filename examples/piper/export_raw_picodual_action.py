@@ -166,6 +166,18 @@ def main() -> None:
         if not np.isfinite(raw[int(start):int(end), :6]).all(axis=1).any():
             raise ValueError(f"episode {ep} has no finite tcp_action pose to fill missing frames")
 
+    required_template_meta = ("info.json", "episodes.jsonl", "episodes_stats.jsonl")
+    missing = [name for name in required_template_meta if not (args.template / "meta" / name).exists()]
+    if missing:
+        if args.task is None:
+            parser.error(
+                f"template {args.template} is missing {missing}; provide --task to build metadata from source"
+            )
+        print(f"Template {args.template} is unavailable ({', '.join(missing)}); building images and metadata from source.",
+              flush=True)
+        export_from_source(args, raw, ends, args.task)
+        return
+
     info = json.loads((args.template / "meta" / "info.json").read_text())
     episodes = [json.loads(line) for line in (args.template / "meta" / "episodes.jsonl").read_text().splitlines()]
     episode_stats = [
