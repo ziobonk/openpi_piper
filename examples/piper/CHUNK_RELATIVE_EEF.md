@@ -43,3 +43,24 @@ uv run scripts/serve_policy.py --port 6006 policy:checkpoint \
   --dataset pick_cube_chunk_relative --episode 0 --max_frames 100 \
   --model_action_frame chunk_relative --no_show
 ```
+
+## 在 Piper 回放数据集并查看动作块
+
+先检查转换后的动作范围；`--dry_run` 不连接机械臂：
+
+```bash
+.venv/bin/python examples/piper/replay_picodual_lerobot.py \
+  --data_dir pick_cube_chunk_relative --episode 0 --dry_run
+.venv/bin/python examples/piper/visualize_picodual_dataset.py \
+  --data_dir pick_cube_chunk_relative --episode 0 --view training_chunk
+```
+
+真机回放每次读取当前 Piper TCP，并以数据集当前帧的绝对 action 为 `T_base`，执行后续 `--exec_horizon` 帧的相对动作。默认每块执行 20 步，再读取当前 TCP 作为下块基准；不会把 PICO World 绝对位姿直接下发给机器人。首次可逐帧确认，夹爪默认保持不动；确认后可按需加 `--control_gripper`：
+
+```bash
+.venv/bin/python examples/piper/replay_picodual_lerobot.py \
+  --data_dir pick_cube_chunk_relative --episode 0 \
+  --exec_horizon 20 --step --speed 0.25
+```
+
+可视化只加载所选 episode，支持 `--view episode` 或 `--view training_chunk`；如需将轨迹显示在 Robot Base 坐标系，可加 `--tcp_start_pose x y z rx ry rz`。回放和可视化不会修改数据集。
