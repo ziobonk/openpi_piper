@@ -3,7 +3,7 @@
 训练数据来自 `pick_cube_raw_action`，其中每帧 `actions` 是 PICO World 下的绝对虚拟 TCP 位姿，且 `state` 与 `actions` 同帧。先生成单独的数据集，再计算新配置的归一化统计：
 
 ```bash
-.venv/bin/python examples/piper/prepare_chunk_relative_eef.py \
+.venv/bin/python examples/piper/chunk_relative/prepare_chunk_relative_eef.py \
   --source pick_cube_raw_action --output pick_cube_chunk_relative \
   --robot-open-width-mm 20
 .venv/bin/python scripts/compute_norm_stats.py --config-name pi05_piper_eef_chunk_relative
@@ -29,17 +29,17 @@ uv run scripts/serve_policy.py --port 6006 policy:checkpoint \
   --policy.config=pi05_piper_eef_chunk_relative \
   --policy.dir=checkpoints/pi05_piper_eef_chunk_relative/piper_chunk_relative/30000
 
-.venv/bin/python examples/piper/inference_eef.py --host <服务器地址> --port 6006 \
+.venv/bin/python examples/piper/runtime/inference_eef.py --host <服务器地址> --port 6006 \
   --model_action_frame chunk_relative --exec_horizon 20 \
   --rs2_base <相机序列号> --usb_wrist <相机编号>
 ```
 
-异步控制可换用 `examples/piper/inference_eef_async.py`，保留相同的 `--model_action_frame chunk_relative --exec_horizon 20` 参数。推理时每次采样图像和夹爪状态的同时，读取机械臂当前 TCP 位姿 `T_robot`，整块目标都按 `T_robot @ D[k]` 转成 Robot Base 位姿。下一次请求重新采样 TCP。异步客户端在缓冲和平滑前已完成此转换，所以新旧动作块使用同一坐标系。推理端不读取训练数据集，也不读取 PICO 世界原点。
+异步控制可换用 `examples/piper/runtime/inference_eef_async.py`，保留相同的 `--model_action_frame chunk_relative --exec_horizon 20` 参数。推理时每次采样图像和夹爪状态的同时，读取机械臂当前 TCP 位姿 `T_robot`，整块目标都按 `T_robot @ D[k]` 转成 Robot Base 位姿。下一次请求重新采样 TCP。异步客户端在缓冲和平滑前已完成此转换，所以新旧动作块使用同一坐标系。推理端不读取训练数据集，也不读取 PICO 世界原点。
 
 使用前仍须核对两端的**虚拟 TCP 与机械臂 TCP 的原点和轴方向一致**，相机视角与训练数据一致，并确认夹爪的 0 mm/20 mm 对应关系。若工具坐标定义不同，需要先对局部位姿作工具坐标变换；本方案只消除了全局世界坐标对齐需求。建议先在离线评估或低速状态下检查动作方向：
 
 ```bash
-.venv/bin/python examples/piper/inference_eef.py \
+.venv/bin/python examples/piper/runtime/inference_eef.py \
   --dataset pick_cube_chunk_relative --episode 0 --max_frames 100 \
   --model_action_frame chunk_relative --no_show
 ```
@@ -49,16 +49,16 @@ uv run scripts/serve_policy.py --port 6006 policy:checkpoint \
 先检查转换后的动作范围；`--dry_run` 不连接机械臂：
 
 ```bash
-.venv/bin/python examples/piper/replay_picodual_lerobot.py \
+.venv/bin/python examples/piper/data_tools/replay_picodual_lerobot.py \
   --data_dir pick_cube_chunk_relative --episode 0 --dry_run
-.venv/bin/python examples/piper/visualize_picodual_dataset.py \
+.venv/bin/python examples/piper/data_tools/visualize_picodual_dataset.py \
   --data_dir pick_cube_chunk_relative --episode 0 --view training_chunk
 ```
 
 真机回放每次读取当前 Piper TCP，并以数据集当前帧的绝对 action 为 `T_base`，执行后续 `--exec_horizon` 帧的相对动作。默认每块执行 20 步，再读取当前 TCP 作为下块基准；不会把 PICO World 绝对位姿直接下发给机器人。首次可逐帧确认，夹爪默认保持不动；确认后可按需加 `--control_gripper`：
 
 ```bash
-.venv/bin/python examples/piper/replay_picodual_lerobot.py \
+.venv/bin/python examples/piper/data_tools/replay_picodual_lerobot.py \
   --data_dir pick_cube_chunk_relative --episode 0 \
   --exec_horizon 20 --step --speed 0.25
 ```

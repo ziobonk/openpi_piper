@@ -6,11 +6,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pico_relative_se3 import PicoRelativeTcpMapper
-from pico_relative_se3 import TrackingOriginJumpError
-from pico_relative_se3 import invert_transform
-from pico_relative_se3 import pose_to_matrix
-from pico_relative_se3 import relative_transform
+from examples.piper.transforms.pico_relative_se3 import PicoRelativeTcpMapper
+from examples.piper.transforms.pico_relative_se3 import TrackingOriginJumpError
+from examples.piper.transforms.pico_relative_se3 import invert_transform
+from examples.piper.transforms.pico_relative_se3 import pose_to_matrix
+from examples.piper.transforms.pico_relative_se3 import relative_transform
 
 
 def _axis_angle(axis, angle):

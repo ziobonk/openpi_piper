@@ -1,46 +1,46 @@
 #!/usr/bin/env python3
 """
-Piper 机械臂推理脚本 — 通过策略服务器控制机械臂。
+双臂 Piper 推理脚本 — 通过策略服务器同时控制左右两台机械臂。
 
-本脚本连接到 openpi 策略服务器 (WebsocketPolicyServer)，读取 Piper 的关节角、
-夹爪状态和相机图像，发送给模型推理，接收动作块并执行。
+本脚本连接到 openpi 策略服务器 (WebsocketPolicyServer)，读取双臂 Piper
+的关节角、夹爪状态和三路相机图像，发送给模型推理，接收动作块并执行。
 
 用法:
     # 启动策略服务器 (在 GPU 机器上)
     uv run scripts/serve_policy.py policy:checkpoint \
-        --policy.config=pi05_libero \
-        --policy.dir=gs://openpi-assets/checkpoints/pi05_libero
+        --policy.config=pi05_dual_piper_joint_lora \
+        --policy.dir=./checkpoints/pi05_dual_piper_joint_lora/my_exp/30000
 
     # 在机器人端运行推理
-    python examples/piper/inference.py --host <GPU_SERVER_IP> --port 8000
+    python examples/piper/runtime/dual_inference.py --host <GPU_SERVER_IP> --port 8000
 
-    # RealSense D435i/D405 相机
-    python examples/piper/inference.py --host localhost --port 6006 \
-        --rs2_base 231122071797 --rs2_wrist 352122272178
+    # 三路 RealSense 相机
+    python examples/piper/runtime/dual_inference.py --host localhost \
+        --rs2_base 231122071797 --rs2_left_wrist 260322279175 \
+        --rs2_right_wrist 352122272178
 
-    # OpenCV webcam 回退
-    python examples/piper/inference.py --host 192.168.1.100 --port 8000 \
-        --cam_ids 0 2
+    # OpenCV webcam 回退 (base, left wrist, right wrist)
+    python examples/piper/runtime/dual_inference.py --host 192.168.1.100 --port 8000 \
+        --cam_ids 0 2 4
 
     # 交互模式：每次推理前输入新的 prompt
-    python examples/piper/inference.py --host localhost --interactive
+    python examples/piper/runtime/dual_inference.py --host localhost --interactive
 
 前置条件:
-    1. CAN 模块已激活:  bash can_activate.sh can0 1000000
-    2. 机械臂已上电、处于从臂模式
+    1. CAN 模块已激活:  bash can_activate.sh can0 1000000 && bash can_activate.sh can1 1000000
+    2. 双臂均已上电、处于从臂模式
     3. piper_sdk 已安装:  pip install piper_sdk
     4. openpi-client 已安装: cd packages/openpi-client && pip install -e .
 
 控制流程:
-    模型每次返回一个 action chunk (action_horizon, action_dim)。
-    我们执行 chunk 的前 `exec_horizon` 步，然后重新查询模型。
-    这类似于 receding horizon control / action chunking with temporal ensemble。
+    模型每次返回一个 action chunk (action_horizon, 14)。
+    左臂取 dims 0-6，右臂取 dims 7-13，执行 exec_horizon 步后重新查询。
 
 键盘控制:
     Enter   — 开始/继续推理
     s       — 暂停推理
     q       — 退出
-    r       — 重置机械臂到初始位置
+    r       — 双臂重置到初始位置
 """
 
 import os
@@ -58,7 +58,7 @@ import numpy as np
 # ===========================================================================
 
 # --- Piper SDK ---
-PIPER_SDK_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "piper_sdk")
+PIPER_SDK_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "..", "piper_sdk")
 PIPER_EXAMPLES_PATH = os.path.dirname(__file__)
 if PIPER_SDK_PATH not in sys.path:
     sys.path.insert(0, PIPER_SDK_PATH)
@@ -74,7 +74,6 @@ except ImportError:
 
 # --- openpi-client (策略服务器客户端) ---
 try:
-    from openpi_client import image_tools as _image_tools
     from openpi_client import websocket_client_policy
 except ImportError:
     print("[ERROR] 无法导入 openpi_client，请先安装:")
@@ -89,24 +88,15 @@ from camera_utils import create_cameras
 # 常量 — 根据你的模型和任务调整
 # ===========================================================================
 
-# 默认动作块长度 (与模型 config 保持一致)
 DEFAULT_ACTION_HORIZON = 50
-# 每次执行多少步后再重新查询模型 (≤ action_horizon)
-DEFAULT_EXEC_HORIZON = 25
-# Piper 关节角: raw (0.001度) ↔ rad
+DEFAULT_EXEC_HORIZON = 20
 RAW_TO_RAD = np.pi / 180.0 / 1000.0
 RAD_TO_RAW = 180.0 * 1000.0 / np.pi
-# 图像尺寸 (必须与模型训练时一致)
 IMAGE_SIZE = (224, 224)
-# 默认控制频率 (Hz)
-CONTROL_FREQ = 10
-# 默认速度百分比
+CONTROL_FREQ = 25
 DEFAULT_SPEED_PCT = 40
-# 默认最大关节速度 (rad/s), 3 rad/s ≈ 100% speed
 DEFAULT_MAX_JOINT_SPEED = 3.0
-# 默认插值频率 (Hz), None=不插值, 建议 50-200
-DEFAULT_INTERP_FREQ = None
-# 夹爪控制力矩
+DEFAULT_INTERP_FREQ = 200
 GRIPPER_EFFORT = 1000
 
 
@@ -128,13 +118,14 @@ def _joint_arrived(cur: float, target: float, step: float) -> bool:
 
 
 # ===========================================================================
-# Piper 控制封装
+# Piper 控制封装 (单臂)
 # ===========================================================================
 
 class PiperController:
     """封装 Piper SDK 的控制循环。"""
 
     def __init__(self, can_name: str = "can0"):
+        self._can_name = can_name
         self._piper = C_PiperInterface_V2(
             can_name=can_name,
             judge_flag=False,
@@ -148,16 +139,15 @@ class PiperController:
     # ---- 使能 ----
 
     def enable(self, speed_pct: int = DEFAULT_SPEED_PCT, max_acc: int = 200) -> bool:
-        print("[Piper] 正在使能...")
+        print(f"[Piper {self._can_name}] 正在使能...")
         deadline = time.monotonic() + 10.0
         while not self._piper.EnablePiper():
             if time.monotonic() > deadline:
-                print("[Piper] 使能超时! 检查机械臂状态。")
+                print(f"[Piper {self._can_name}] 使能超时! 检查机械臂状态。")
                 return False
             time.sleep(0.01)
         self._enabled = True
         self.set_joint_mode(speed_pct)
-        # 设置各关节最大加速度 (写入 flash，需延迟)
         for j in range(1, 7):
             self._piper.JointMaxAccConfig(j, max_acc)
             time.sleep(0.05)
@@ -168,11 +158,11 @@ class PiperController:
         self._piper.GripperCtrl(0, GRIPPER_EFFORT, 0x02, 0)
         time.sleep(0.05)
         self._piper.GripperCtrl(0, GRIPPER_EFFORT, 0x01, 0)
-        print("[Piper] 使能成功")
+        print(f"[Piper {self._can_name}] 使能成功")
         return True
 
     def disable(self):
-        print("[Piper] 正在去使能...")
+        print(f"[Piper {self._can_name}] 正在去使能...")
         self._piper.DisableArm()
         self._enabled = False
         time.sleep(0.1)
@@ -186,7 +176,7 @@ class PiperController:
     def get_joints_rad(self) -> np.ndarray:
         """读取6个关节角 (弧度), shape=(6,), float32。"""
         joint_msg = self._piper.GetArmJointMsgs()
-        js = joint_msg.joint_state  # ArmMsgFeedBackJointStates
+        js = joint_msg.joint_state
         raw = np.array(
             [js.joint_1, js.joint_2, js.joint_3, js.joint_4, js.joint_5, js.joint_6],
             dtype=np.float32,
@@ -212,12 +202,7 @@ class PiperController:
         self._piper.MotionCtrl_2(0x01, 0x01, max(20, min(100, speed_pct)), 0x00)
 
     def send_joint_command(self, joints_rad: np.ndarray):
-        """发送关节角指令，同时做限位保护。joints_rad.shape=(6,) 弧度。"""
-        # clipped = np.clip(
-        #     joints_rad[:6],
-        #     JOINT_LIMITS_RAD[:, 0],
-        #     JOINT_LIMITS_RAD[:, 1],
-        # )
+        """发送关节角指令。joints_rad.shape=(6,) 弧度。"""
         raw = (joints_rad[:6] * RAD_TO_RAW).astype(int)
         self._piper.JointCtrl(raw[0], raw[1], raw[2], raw[3], raw[4], raw[5])
 
@@ -227,11 +212,7 @@ class PiperController:
         self._piper.GripperCtrl(raw, effort, 0x01, 0)
 
     def execute_action(self, action: np.ndarray, speed_pct: int = DEFAULT_SPEED_PCT):
-        """执行单个动作。
-
-        action.shape = (7,): [j1..j6(rad), gripper(raw_0.001mm)]
-        """
-        # self.set_joint_mode(speed_pct)
+        """执行单个动作。action.shape = (7,): [j1..j6(rad), gripper(raw_0.001mm)]"""
         self.send_joint_command(action[:6])
         self.send_gripper_command(action[6])
 
@@ -240,7 +221,7 @@ class PiperController:
         """使用插值平滑回到初始关节位姿 [-pi/2, 0, 0, 0, 0, 0]."""
         init_joints = np.array([-np.pi / 2, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
         cur = self.get_joints_rad().astype(np.float64)
-        print(f"[Piper] 回到初始位姿: {np.array2string(init_joints, precision=3)}  "
+        print(f"[Piper {self._can_name}] 回到初始位姿: {np.array2string(init_joints, precision=3)}  "
               f"当前: {np.array2string(cur, precision=3)}")
 
         if interp_freq is not None:
@@ -248,9 +229,9 @@ class PiperController:
             delta = _shortest_delta(init_joints, cur)
             max_delta = np.max(np.abs(delta))
             if max_delta < 1e-6:
-                print("[Piper] 已在初始位姿")
+                print(f"[Piper {self._can_name}] 已在初始位姿")
                 return
-            joint_spd = min(max_delta * 2.0, max_joint_speed)  # ~0.5s to target
+            joint_spd = min(max_delta * 2.0, max_joint_speed)
             angle_per_tick_rad = joint_spd * inner_dt
             tick_frac = np.where(np.abs(delta) > 0, delta / max_delta, 0.0)
             speed_pct = int(joint_spd / 3.0 * 100)
@@ -275,33 +256,37 @@ class PiperController:
                 time.sleep(0.02)
 
         self.send_gripper_command(0)
-        print("[Piper] 已到初始位姿")
+        print(f"[Piper {self._can_name}] 已到初始位姿")
 
 
 # ===========================================================================
-# 推理引擎
+# 双臂推理引擎
 # ===========================================================================
 
-class PiperInference:
-    """Piper 推理主循环。
+class DualPiperInference:
+    """双臂 Piper 推理主循环。
 
-    连接策略服务器，读取机器人状态和图像，执行 receding horizon control。
+    连接策略服务器，读取双臂状态和三路相机图像，
+    执行 receding horizon control。
     """
 
     def __init__(
         self,
         host: str = "localhost",
         port: int = 8000,
-        can_name: str = "can0",
+        left_can: str = "can0",
+        right_can: str = "can1",
         rs2_base_serial: Optional[str] = None,
-        rs2_wrist_serial: Optional[str] = None,
+        rs2_left_wrist_serial: Optional[str] = None,
+        rs2_right_wrist_serial: Optional[str] = None,
         cv_base_id: Optional[int] = None,
-        cv_wrist_id: Optional[int] = None,
+        cv_left_wrist_id: Optional[int] = None,
+        cv_right_wrist_id: Optional[int] = None,
         action_horizon: int = DEFAULT_ACTION_HORIZON,
         exec_horizon: int = DEFAULT_EXEC_HORIZON,
         max_joint_speed: float = DEFAULT_MAX_JOINT_SPEED,
         interp_freq: Optional[float] = DEFAULT_INTERP_FREQ,
-        default_prompt: str = "pick up the walnut and place it into the cup",
+        default_prompt: str = "Both arms fold the T-shirt",
         interactive: bool = False,
     ):
         self._action_horizon = action_horizon
@@ -313,34 +298,38 @@ class PiperInference:
         self._interactive = interactive
         self._period = 1.0 / CONTROL_FREQ
 
-        # 连接
-        self._robot = PiperController(can_name)
+        # 双臂
+        self._left = PiperController(left_can)
+        self._right = PiperController(right_can)
         self._policy_client: Optional[websocket_client_policy.WebsocketClientPolicy] = None
         self._policy_host = host
         self._policy_port = port
 
-        # 相机 (优先 RealSense，回退 OpenCV)
+        # 三路相机 (优先 RealSense，回退 OpenCV)
         self._camera = create_cameras(
             base_serial=rs2_base_serial,
-            wrist_serial=rs2_wrist_serial,
+            wrist_serial=rs2_left_wrist_serial,
+            third_serial=rs2_right_wrist_serial,
             base_cv_id=cv_base_id,
-            wrist_cv_id=cv_wrist_id,
+            wrist_cv_id=cv_left_wrist_id,
+            third_cv_id=cv_right_wrist_id,
         )
         self._has_base_cam = bool(rs2_base_serial or cv_base_id is not None)
-        self._has_wrist_cam = bool(rs2_wrist_serial or cv_wrist_id is not None)
+        self._has_left_wrist = bool(rs2_left_wrist_serial or cv_left_wrist_id is not None)
+        self._has_right_wrist = bool(rs2_right_wrist_serial or cv_right_wrist_id is not None)
 
         # 状态
         self._input_queue: queue.Queue[str] = queue.Queue()
         self._running = False
         self._inferring = False
-        self._action_cache: Optional[np.ndarray] = None  # (action_horizon, action_dim)
+        self._action_cache: Optional[np.ndarray] = None  # (action_horizon, 14)
         self._cache_step = 0
 
     # ======================== 运行 ========================
 
     def run(self):
         print("=" * 60)
-        print("Piper 推理客户端 (策略服务器模式)")
+        print("双臂 Piper 推理客户端 (策略服务器模式)")
         print(f"服务器:         {self._policy_host}:{self._policy_port}")
         print(f"控制频率:       {CONTROL_FREQ} Hz")
         if self._use_interp:
@@ -349,8 +338,8 @@ class PiperInference:
             print(f"关节插值:       关闭 (直接控制)")
         print("=" * 60)
 
-        # 1. 使能机械臂
-        if not self._robot.enable():
+        # 1. 使能双臂
+        if not self._left.enable() or not self._right.enable():
             return
 
         # 2. 启动相机
@@ -390,17 +379,15 @@ class PiperInference:
     # ======================== 控制循环 ========================
 
     def _control_loop(self):
-        """主控制循环 — 使用 joint-space 插值执行动作。"""
+        """主控制循环 — 使用 joint-space 插值执行双臂动作。"""
         fps_counter = _FPSCounter("control")
-        # 当前关节角 (用于插值的起点)
-        cur_joints: Optional[np.ndarray] = None
-        # 数据步长: 1/50s 对应模型 50Hz 数据频率
+        cur_left: Optional[np.ndarray] = None
+        cur_right: Optional[np.ndarray] = None
         data_dt = 1.0 / CONTROL_FREQ
 
         while self._running:
             loop_start = time.monotonic()
 
-            # 处理键盘事件
             try:
                 cmd = self._input_queue.get_nowait()
                 self._handle_command(cmd)
@@ -414,65 +401,66 @@ class PiperInference:
 
             # --- 推理 + 动作执行 ---
 
-            # 决定是否需要重新查询模型
             if self._action_cache is None or self._cache_step >= self._exec_horizon:
                 self._query_policy()
                 self._cache_step = 0
-                # 新 chunk 开始时，从机械臂读取当前关节角
-                cur_joints = self._robot.get_joints_rad().astype(np.float64)
+                cur_left = self._left.get_joints_rad().astype(np.float64)
+                cur_right = self._right.get_joints_rad().astype(np.float64)
 
             if self._action_cache is not None:
-                # 从 action chunk 中取当前步
                 idx = min(self._cache_step, self._action_cache.shape[0] - 1)
-                action = self._action_cache[idx]
+                action = self._action_cache[idx]  # (14,)
 
-                target_joints = action[:6].astype(np.float64)
-                gripper = float(action[6])
+                target_left = action[:6].astype(np.float64)
+                gripper_left = float(action[6])
+                target_right = action[7:13].astype(np.float64)
+                gripper_right = float(action[13])
 
-                # 使用插值发送关节指令 (如果 cur_joints 为 None 则从机械臂读取)
-                if cur_joints is None:
-                    cur_joints = self._robot.get_joints_rad().astype(np.float64)
-                self._send_joint_cmd(cur_joints, target_joints, gripper, data_dt)
-                cur_joints = target_joints.copy()
+                if cur_left is None:
+                    cur_left = self._left.get_joints_rad().astype(np.float64)
+                if cur_right is None:
+                    cur_right = self._right.get_joints_rad().astype(np.float64)
+
+                self._send_joint_cmd(cur_left, target_left, gripper_left, self._left, data_dt)
+                self._send_joint_cmd(cur_right, target_right, gripper_right, self._right, data_dt)
+                cur_left = target_left.copy()
+                cur_right = target_right.copy()
 
                 self._cache_step += 1
-
                 fps_counter.tick()
 
-                # 每 5 步显示一次相机画面
                 if fps_counter.count % 5 == 0:
                     self._display_cameras()
 
-                # 定期打印状态
                 if fps_counter.count % 100 == 0:
-                    state = self._robot.get_state()
-                    j_str = ", ".join(f"{s:.3f}" for s in state[:6])
-                    g_str = f"{state[6]:.0f}"
-                    a_str = ", ".join(f"{a:.3f}" for a in action[:6])
+                    ls = self._left.get_state()
+                    rs = self._right.get_state()
+                    lj_str = ", ".join(f"{s:.3f}" for s in ls[:6])
+                    rj_str = ", ".join(f"{s:.3f}" for s in rs[:6])
                     mode_str = "interp" if self._use_interp else "direct"
                     print(
                         f"[{fps_counter.count:5d}] fps={fps_counter.fps:.1f} | "
-                        f"joints=[{j_str}] grip={g_str} | "
-                        f"cmd=[{a_str}] grip={action[6]:.0f} | {mode_str}"
+                        f"L:[{lj_str}] G={ls[6]:.3f}→{gripper_left:.3f} | "
+                        f"R:[{rj_str}] G={rs[6]:.3f}→{gripper_right:.3f} | {mode_str}"
                     )
 
-            # 控制频率
             elapsed = time.monotonic() - loop_start
             if elapsed < self._period:
                 time.sleep(self._period - elapsed)
 
-    # ======================== 关节空间控制 (基于 demo_dual_replay.py) ========================
+    # ======================== 关节空间控制 ========================
 
     def _send_joint_cmd(
         self,
         cur_joints: np.ndarray,
         target_joints: np.ndarray,
         gripper: float,
+        arm: PiperController,
         data_dt: float,
     ):
         """发送一个关节角目标，可选带步间插值。
 
-        算法 (与 demo_dual_replay.py 相同):
+        算法 (与 inference.py / demo_dual_replay.py 相同):
             1. 计算 delta = target - cur (最短弧)
             2. joint_spd = min(|delta| * data_freq, max_joint_speed)
             3. 动态调整 MotionCtrl_2 速度百分比
@@ -483,36 +471,27 @@ class PiperInference:
         cur_joints : ndarray (6,) float64 — 当前关节角 (rad)
         target_joints : ndarray (6,) float64 — 目标关节角 (rad)
         gripper : float — 目标夹爪位置 (raw 0.001mm)
+        arm : PiperController — 执行动作的机械臂
         data_dt : float — 数据步长 (s)
         """
         delta = _shortest_delta(target_joints, cur_joints)
         max_delta = np.max(np.abs(delta))
 
-        # 无插值模式: 直接发送
         if not self._use_interp:
-            self._robot.send_joint_command(target_joints)
-            self._robot.send_gripper_command(gripper)
+            arm.send_joint_command(target_joints)
+            arm.send_gripper_command(gripper)
             time.sleep(data_dt)
             return
 
-        # 插值模式
         if max_delta < 1e-6:
-            self._robot.send_gripper_command(gripper)
+            arm.send_gripper_command(gripper)
             return
 
         inner_dt = 1.0 / self._interp_freq
-
-        # joint_spd = delta_rad * data_freq (rad/s), capped
         joint_spd = min(max_delta / data_dt, self._max_joint_speed)
-
-        # 动态速度百分比 (3 rad/s ≈ 100%)
         speed_pct = max(20, min(100, int(joint_spd / 3.0 * 100)))
-        self._robot.set_speed(speed_pct)
-
-        # angle_per_tick in radians for the fastest joint
+        arm.set_speed(speed_pct)
         angle_per_tick_rad = joint_spd * inner_dt
-
-        # 各关节按比例推进
         tick_frac = np.where(np.abs(delta) > 0, delta / max_delta, 0.0)
 
         cur = cur_joints.copy()
@@ -525,12 +504,12 @@ class PiperInference:
                     done = False
                 else:
                     cur[j] = target_joints[j]
-            self._robot.send_joint_command(cur)
+            arm.send_joint_command(cur)
             if done:
                 break
             time.sleep(inner_dt)
 
-        self._robot.send_gripper_command(gripper)
+        arm.send_gripper_command(gripper)
 
     def _display_cameras(self):
         """将所有相机画面拼接显示。"""
@@ -543,15 +522,20 @@ class PiperInference:
             cv2.putText(img, "base", (5, 18),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             frames.append(img)
-        if self._has_wrist_cam:
+        if self._has_left_wrist:
             img = self._camera.get_wrist()
-            cv2.putText(img, "wrist", (5, 18),
+            cv2.putText(img, "L wrist", (5, 18),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            frames.append(img)
+        if self._has_right_wrist:
+            img = self._camera.get_third()
+            cv2.putText(img, "R wrist", (5, 18),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             frames.append(img)
 
         if frames:
             vis = np.concatenate(frames, axis=1) if len(frames) > 1 else frames[0]
-            cv2.imshow("Piper Inference", vis[..., ::-1])  # RGB → BGR
+            cv2.imshow("Dual Piper Inference", vis[..., ::-1])
             cv2.waitKey(1)
 
     def _query_policy(self):
@@ -560,7 +544,6 @@ class PiperInference:
             obs = self._build_observation()
             result = self._policy_client.infer(obs)
             self._action_cache = np.asarray(result["actions"], dtype=np.float32)
-            # 打印服务器端耗时
             timings = result.get("policy_timing", {})
             server_timings = result.get("server_timing", {})
             if timings or server_timings:
@@ -572,7 +555,6 @@ class PiperInference:
                 print(f"  [Policy] {' | '.join(parts)}")
         except Exception as e:
             print(f"[Policy] 查询失败: {e}")
-            # 如果是连接断开，尝试重连
             time.sleep(1)
             try:
                 self._connect_policy()
@@ -582,30 +564,42 @@ class PiperInference:
                 self._inferring = False
 
     def _build_observation(self) -> dict:
-        """构建发送给策略服务器的 observation。"""
-        state = self._robot.get_state()
+        """构建发送给策略服务器的 observation。
 
-        # 相机图像
-        base_image = np.zeros((IMAGE_SIZE[1], IMAGE_SIZE[0], 3), dtype=np.uint8)
-        wrist_image = base_image.copy()
+        14 维 state:
+            [left_j1..j6(rad), left_gripper(raw), right_j1..j6(rad), right_gripper(raw)]
+
+        三路相机:
+            observation/image              — 基座相机
+            observation/wrist_image_left   — 左腕相机
+            observation/wrist_image_right  — 右腕相机
+        """
+        left_state = self._left.get_state()
+        right_state = self._right.get_state()
+        state = np.concatenate([left_state, right_state]).astype(np.float32)  # (14,)
+
+        empty = np.zeros((IMAGE_SIZE[1], IMAGE_SIZE[0], 3), dtype=np.uint8)
+        base_image = empty.copy()
+        left_wrist_image = empty.copy()
+        right_wrist_image = empty.copy()
         if self._camera:
             if self._has_base_cam:
                 base_image = self._camera.get_base()
-            if self._has_wrist_cam:
-                wrist_image = self._camera.get_wrist()
+            if self._has_left_wrist:
+                left_wrist_image = self._camera.get_wrist()
+            if self._has_right_wrist:
+                right_wrist_image = self._camera.get_third()
 
-        # Prompt
         if self._interactive:
             prompt = input("指令: ").strip() or self._default_prompt
         else:
             prompt = self._default_prompt
 
-        # 格式必须匹配策略服务器端配置的 transforms。
-        # 对于 LIBERO 格式的模型: observation/state, observation/image, observation/wrist_image
         return {
-            "observation/state": state.astype(np.float32),
+            "observation/state": state,
             "observation/image": base_image,
-            "observation/wrist_image": wrist_image,
+            "observation/wrist_image_left": left_wrist_image,
+            "observation/wrist_image_right": right_wrist_image,
             "prompt": prompt,
         }
 
@@ -628,18 +622,25 @@ class PiperInference:
         elif cmd == "reset":
             was_inferring = self._inferring
             self._inferring = False
-            self._robot.go_to_init_pose(
+            print("[Reset] 左臂...")
+            self._left.go_to_init_pose(
+                max_joint_speed=self._max_joint_speed,
+                interp_freq=self._interp_freq,
+            )
+            print("[Reset] 右臂...")
+            self._right.go_to_init_pose(
                 max_joint_speed=self._max_joint_speed,
                 interp_freq=self._interp_freq,
             )
             self._inferring = was_inferring
+            print("[Reset] 完成")
 
     def _keyboard_listener(self):
         """后台键盘监听。"""
         print("\n操作提示:")
         print("  [Enter]  开始推理")
         print("  [s]      暂停")
-        print("  [r]      重置到初始位姿")
+        print("  [r]      双臂重置到初始位姿")
         print("  [q]      退出\n")
 
         while self._running:
@@ -684,51 +685,34 @@ class _FPSCounter:
 def _parse_args():
     import argparse
 
-    p = argparse.ArgumentParser(description="Piper 策略服务器推理客户端")
+    p = argparse.ArgumentParser(description="双臂 Piper 策略服务器推理客户端")
     p.add_argument("--host", default="localhost", help="策略服务器地址 (默认: localhost)")
-    p.add_argument("--port", type=int, default=8000, help="策略服务器端口 (默认: 8000)")
-    p.add_argument("--can_name", default="can0", help="CAN 端口名称 (默认: can0)")
+    p.add_argument("--port", type=int, default=6006, help="策略服务器端口 (默认: 8000)")
+    p.add_argument("--left_can", default="can0", help="左臂 CAN 端口 (默认: can0)")
+    p.add_argument("--right_can", default="can1", help="右臂 CAN 端口 (默认: can1)")
+    p.add_argument("--rs2_base", default=None, help="D435i 基座相机序列号")
+    p.add_argument("--rs2_left_wrist", default=None, help="D405 左腕相机序列号")
+    p.add_argument("--rs2_right_wrist", default=None, help="D405 右腕相机序列号")
     p.add_argument(
-        "--rs2_base", default=None, help="D435i 基座相机序列号。先运行 'python camera_utils.py --list' 查看"
+        "--cam_ids", type=int, nargs="*", default=[],
+        help="OpenCV 设备 ID 回退。第1=基座，第2=左腕，第3=右腕"
     )
     p.add_argument(
-        "--rs2_wrist", default=None, help="D405 腕部相机序列号。先运行 'python camera_utils.py --list' 查看"
-    )
-    p.add_argument(
-        "--cam_ids", type=int, nargs="*", default=[], help="OpenCV 设备 ID 回退。第一个=基座，第二个=腕部"
-    )
-    p.add_argument(
-        "--action_horizon",
-        type=int,
-        default=DEFAULT_ACTION_HORIZON,
+        "--action_horizon", type=int, default=DEFAULT_ACTION_HORIZON,
         help=f"动作块长度 (默认: {DEFAULT_ACTION_HORIZON})",
     )
     p.add_argument(
-        "--exec_horizon",
-        type=int,
-        default=DEFAULT_EXEC_HORIZON,
+        "--exec_horizon", type=int, default=DEFAULT_EXEC_HORIZON,
         help=f"每次执行步数再重新推理 (默认: {DEFAULT_EXEC_HORIZON})",
     )
+    p.add_argument("--prompt", default="First, move the closet T-shirt to the center.Second,Both grippers fold the T-shirt.Then right gripper moves the T-shirt to the right.", help="默认语言指令")
+    p.add_argument("--interactive", action="store_true", help="交互模式: 每次推理前手动输入指令")
     p.add_argument(
-        "--prompt",
-        default="pick up the pen and place it into the cup",
-        help="默认语言指令",
-    )
-    p.add_argument(
-        "--interactive",
-        action="store_true",
-        help="交互模式: 每次推理前手动输入指令",
-    )
-    p.add_argument(
-        "--max_joint_speed",
-        type=float,
-        default=DEFAULT_MAX_JOINT_SPEED,
+        "--max_joint_speed", type=float, default=DEFAULT_MAX_JOINT_SPEED,
         help=f"最大关节速度 rad/s (默认: {DEFAULT_MAX_JOINT_SPEED})",
     )
     p.add_argument(
-        "--interp_freq",
-        type=float,
-        default=DEFAULT_INTERP_FREQ,
+        "--interp_freq", type=float, default=DEFAULT_INTERP_FREQ,
         help=f"插值频率 Hz (默认: {DEFAULT_INTERP_FREQ}). 设为 0 禁用插值",
     )
     return p.parse_args()
@@ -737,14 +721,17 @@ def _parse_args():
 def main():
     args = _parse_args()
 
-    inference = PiperInference(
+    inference = DualPiperInference(
         host=args.host,
         port=args.port,
-        can_name=args.can_name,
+        left_can=args.left_can,
+        right_can=args.right_can,
         rs2_base_serial=args.rs2_base,
-        rs2_wrist_serial=args.rs2_wrist,
+        rs2_left_wrist_serial=args.rs2_left_wrist,
+        rs2_right_wrist_serial=args.rs2_right_wrist,
         cv_base_id=args.cam_ids[0] if len(args.cam_ids) > 0 else None,
-        cv_wrist_id=args.cam_ids[1] if len(args.cam_ids) > 1 else None,
+        cv_left_wrist_id=args.cam_ids[1] if len(args.cam_ids) > 1 else None,
+        cv_right_wrist_id=args.cam_ids[2] if len(args.cam_ids) > 2 else None,
         action_horizon=args.action_horizon,
         exec_horizon=args.exec_horizon,
         max_joint_speed=args.max_joint_speed,

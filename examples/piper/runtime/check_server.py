@@ -7,13 +7,13 @@
 
 用法:
     # 基本检查
-    python examples/piper/check_server.py --host localhost --port 8000
+    python examples/piper/runtime/check_server.py --host localhost --port 8000
 
     # 指定环境 (影响生成的测试数据格式)
-    python examples/piper/check_server.py --host 192.168.1.100 --port 8000 --env libero
+    python examples/piper/runtime/check_server.py --host 192.168.1.100 --port 8000 --env libero
 
     # 性能基准测试
-    python examples/piper/check_server.py --host localhost --port 8000 --benchmark --repeat 50
+    python examples/piper/runtime/check_server.py --host localhost --port 8000 --benchmark --repeat 50
 
 输出:
     1. ✓/✗ 连接状态
@@ -32,7 +32,7 @@ from typing import Optional
 import numpy as np
 
 # --- openpi-client ---
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "packages", "openpi-client", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "packages", "openpi-client", "src"))
 try:
     from openpi_client import websocket_client_policy
 except ImportError:

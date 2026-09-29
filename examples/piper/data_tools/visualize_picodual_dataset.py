@@ -6,7 +6,7 @@
 PICO World TCP 轨迹，并按训练时的 ``inv(T_actions[0]) @ T_actions[k]``
 显示每个 50 步动作块。可用 ``--tcp_start_pose`` 查看映射到 Robot Base 后的目标。
 
-    python examples/piper/visualize_picodual_dataset.py \
+    python examples/piper/data_tools/visualize_picodual_dataset.py \
         --data_dir ./pick_cube_chunk_relative --episode 0 --view training_chunk
 
 
@@ -20,36 +20,36 @@ PICO-relative 轨迹，使用 ``--model_action_frame pico`` 可按
 ``inference_action_transform.py`` 的标定转换到当前 TCP-relative 后再显示。
 
 示例：
-    python examples/piper/visualize_picodual_dataset.py --data_dir ./pick_cube --episode 0
+    python examples/piper/data_tools/visualize_picodual_dataset.py --data_dir ./pick_cube --episode 0
 
     # 同时查看 50 步当前 chunk、已拼接历史 chunk 和灰色完整轨迹
-    python examples/piper/visualize_picodual_dataset.py --data_dir ./pick_cube \
+    python examples/piper/data_tools/visualize_picodual_dataset.py --data_dir ./pick_cube \
         --episode 0 --view training_chunk
 
     # 原始 PICO 数据：用机器人初始 TCP 位姿显示 Robot Base 下的训练轨迹
-    python examples/piper/visualize_picodual_dataset.py \
+    python examples/piper/data_tools/visualize_picodual_dataset.py \
         --data_dir ./pick_cube_raw_action --episode 0 --view training_chunk \
         --tcp_start_pose 0.3404 0.0074 0.2504 -0.5464 1.7926 -0.024
 
     # 在连接 Piper 的机器上直接读取当前 TCP 位姿作为 Robot Base 起点
-    python examples/piper/visualize_picodual_dataset.py \
+    python examples/piper/data_tools/visualize_picodual_dataset.py \
         --data_dir ./pick_cube_raw_action --episode 0 --view training_chunk \
         --tcp_start_from_piper --can_name can0
 
     # 仅导出第 2 个 chunk（起点为第 100 帧）
-    python examples/piper/visualize_picodual_dataset.py --data_dir ./pick_cube \
+    python examples/piper/data_tools/visualize_picodual_dataset.py --data_dir ./pick_cube \
         --episode 0 --view training_chunk --start 100 --end 101 \
         --output chunk2.gif --no_show
 
     # 仅用于 state/actions 是 PICO-relative 的数据集
-    python examples/piper/visualize_picodual_dataset.py --data_dir ./pick_cube \
+    python examples/piper/data_tools/visualize_picodual_dataset.py --data_dir ./pick_cube \
         --episode 0 --model_action_frame pico
 
-    python examples/piper/visualize_picodual_dataset.py --data_dir ./pick_cube \
+    python examples/piper/data_tools/visualize_picodual_dataset.py --data_dir ./pick_cube \
         --episode 0 --tcp_frame current --output pick_cube_ep0.gif --no_show
 
     # 使用回放日志中的 Robot start TCP，在 Robot Base 坐标系中显示目标轨迹
-    python examples/piper/visualize_picodual_dataset.py --episode 0 \
+    python examples/piper/data_tools/visualize_picodual_dataset.py --episode 0 \
         --tcp_frame current --tcp_start_pose 0.35 0.0 0.25 0.0 1.57 0.0
 """
 
@@ -66,12 +66,13 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 HERE = Path(__file__).resolve().parent
-REPO_ROOT = HERE.parents[1]
-for import_path in (HERE, REPO_ROOT):
+PIPER_DIR = HERE.parent
+REPO_ROOT = HERE.parents[2]
+for import_path in (HERE, PIPER_DIR, REPO_ROOT):
     if str(import_path) not in sys.path:
         sys.path.insert(0, str(import_path))
 
-from inference_action_transform import pico_relative_actions_to_tcp_relative
+from examples.piper.transforms.inference_action_transform import pico_relative_actions_to_tcp_relative
 
 
 def read_piper_tcp_pose(can_name: str, timeout: float = 3.0) -> np.ndarray:

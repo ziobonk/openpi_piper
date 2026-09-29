@@ -14,7 +14,7 @@ Piper 末端位姿 (EEF) 推理脚本 — 用于 pi05_piper_eef / pi05_piper_eef
 夹爪物理命令约定: 0 = 全闭，20 = 全开。策略预测值约 0.1 表示开，约 0 表示关，
 执行前会经过二值映射。
 
-与 ``examples/piper/inference.py``（关节空间）的区别:
+与 ``examples/piper/runtime/inference.py``（关节空间）的区别:
     - state 读取 ``GetArmEndPoseMsgs()`` (0.001mm / 0.001deg RPY)，转成
       [x, y, z(m), rotvec(rad)]；夹爪读当前宽度转 mm。
     - 执行用 ``EndPoseCtrl``（末端位姿控制模式 ``MotionCtrl_2 0x00``），把
@@ -32,20 +32,20 @@ Piper 末端位姿 (EEF) 推理脚本 — 用于 pi05_piper_eef / pi05_piper_eef
         --policy.dir=<旧版绝对 TCP 模型 checkpoint>
 
     # 2. 在机械臂端运行推理 (默认 robot_absolute；仅用于旧版 Robot Base 模型)
-    python examples/piper/inference_eef.py --host localhost --port 6006 \
+    python examples/piper/runtime/inference_eef.py --host localhost --port 6006 \
         --rs2_base 231122071797 --usb_wrist 0
 
     # 交互模式 (每次推理前输入指令)
-    python examples/piper/inference_eef.py --host localhost --interactive
+    python examples/piper/runtime/inference_eef.py --host localhost --interactive
 
     # PICO World 下绝对 TCP 位姿数据训练的模型：在机器人端提供数据集用于坐标锚点
-    python examples/piper/inference_eef.py --host localhost --port 6006 \
+    python examples/piper/runtime/inference_eef.py --host localhost --port 6006 \
         --model_action_frame tcp_absolute --absolute_pose_dataset ./pick_cube_raw_action \
         --reference_episode 0 --no-binary_gripper
 
     # 数据集离线评测 (可视化末端位姿，可导出 GIF，不连接真实机械臂)
-    python examples/piper/inference_eef.py --dataset ./pick_place --episode 0 --gif eval.gif --no_show
-    python examples/piper/inference_eef.py --dataset ./pick_place --init_pose 0.0 -0.7 -0.4 0 0 0
+    python examples/piper/runtime/inference_eef.py --dataset ./pick_place --episode 0 --gif eval.gif --no_show
+    python examples/piper/runtime/inference_eef.py --dataset ./pick_place --init_pose 0.0 -0.7 -0.4 0 0 0
 
 前置条件:
     1. CAN 模块已激活:  bash can_activate.sh can0 1000000
@@ -104,7 +104,7 @@ except ImportError:
 # ===========================================================================
 
 # --- Piper SDK ---
-OPENPI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+OPENPI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 PIPER_SDK_PATH = os.path.join(OPENPI_ROOT, "piper_sdk")
 PIPER_EXAMPLES_PATH = os.path.dirname(__file__)
 if OPENPI_ROOT not in sys.path:
@@ -132,12 +132,12 @@ except ImportError:
 # --- 相机工具 (支持 RealSense D435i/D405 和 OpenCV) ---
 from camera_utils import create_cameras
 
-from inference_action_transform import pico_relative_actions_to_tcp_relative
-from inference_action_transform import tcp_relative_actions_to_pico_relative
+from examples.piper.transforms.inference_action_transform import pico_relative_actions_to_tcp_relative
+from examples.piper.transforms.inference_action_transform import tcp_relative_actions_to_pico_relative
 
 # --- DM-J4310-2EC 夹爪驱动 (力位模式, USB2CAN /dev/ttyACM1) ---
 # 与机械臂的 can0 相互独立；驱动代码在 examples/piper/dm_gripper/ 下。
-_DM_GRIPPER_PATH = os.path.join(os.path.dirname(__file__), "dm_gripper")
+_DM_GRIPPER_PATH = os.path.join(os.path.dirname(__file__), "..", "dm_gripper")
 if _DM_GRIPPER_PATH not in sys.path:
     sys.path.insert(0, _DM_GRIPPER_PATH)
 try:
@@ -1387,9 +1387,9 @@ class PiperEEFDatasetEval:
           不改变送入模型的相对状态。
 
     用法:
-        python examples/piper/inference_eef.py --dataset ./pick_place --episode 0 --gif eval.gif
-        python examples/piper/inference_eef.py --dataset ./pick_place --init_pose 0.0 -0.7 -0.4 0 0 0
-        python examples/piper/inference_eef.py --dataset ./pick_cube --episode 0 \
+        python examples/piper/runtime/inference_eef.py --dataset ./pick_place --episode 0 --gif eval.gif
+        python examples/piper/runtime/inference_eef.py --dataset ./pick_place --init_pose 0.0 -0.7 -0.4 0 0 0
+        python examples/piper/runtime/inference_eef.py --dataset ./pick_cube --episode 0 \
             --legacy_pick_cube_tcp --tcp_start_pose 0.35 0.0 0.25 0.0 1.57 0.0
     """
 

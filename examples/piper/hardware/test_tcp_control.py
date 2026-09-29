@@ -24,9 +24,9 @@
     x           退出 (或 Ctrl+C)
 
 用法:
-    python examples/piper/test_tcp_control.py
-    python examples/piper/test_tcp_control.py --offset 0 0 0.22 --step 0.005
-    python examples/piper/test_tcp_control.py --offset 0 0 0     # 关闭补偿，对照差异
+    python examples/piper/hardware/test_tcp_control.py
+    python examples/piper/hardware/test_tcp_control.py --offset 0 0 0.22 --step 0.005
+    python examples/piper/hardware/test_tcp_control.py --offset 0 0 0     # 关闭补偿，对照差异
 
 验证建议:
     1. 先让爪尖指一个固定参考点，记下爪尖位姿。
@@ -43,12 +43,12 @@ import sys
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-OPENPI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-for _p in (OPENPI_ROOT, os.path.join(OPENPI_ROOT, "piper_sdk"), os.path.dirname(__file__)):
+OPENPI_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+for _p in (OPENPI_ROOT, os.path.join(OPENPI_ROOT, "piper_sdk"), os.path.dirname(__file__), os.path.join(os.path.dirname(__file__), "..")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from inference_eef import (  # noqa: E402
+from examples.piper.runtime.inference_eef import (  # noqa: E402
     DEFAULT_SPEED_PCT,
     GRIPPER_TCP_OFFSET_M,
     PiperEEFController,

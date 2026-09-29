@@ -17,16 +17,16 @@ Piper 机械臂 WebSocket 推理脚本 — 使用 openpi 策略服务器。
         --policy.dir=<checkpoint_path>
 
     # 直接模式 (无插值, 最快响应)
-    python examples/piper/eval_piper_policy_websocket.py \\
+    python examples/piper/runtime/eval_piper_policy_websocket.py \\
         --host <GPU_IP> --port 8000 --can_name can0
 
     # 插值模式 (平滑运动)
-    python examples/piper/eval_piper_policy_websocket.py \\
+    python examples/piper/runtime/eval_piper_policy_websocket.py \\
         --host <GPU_IP> --port 8000 --can_name can0 \\
         --max_joint_speed 1.0
 
     # 指定相机 (--base_serial=全局D435i, --wrist_serials=腕部D405)
-    python examples/piper/eval_piper_policy_websocket.py \\
+    python examples/piper/runtime/eval_piper_policy_websocket.py \\
         --host localhost --port 6006 \\
         --base_serial 231122071797 --wrist_serials 352122272178
 
@@ -63,13 +63,13 @@ if _DIFFUSION_POLICY_ROOT not in sys.path:
     sys.path.insert(0, _DIFFUSION_POLICY_ROOT)
 
 # Piper SDK
-_PIPER_SDK_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "piper_sdk")
+_PIPER_SDK_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "..", "piper_sdk")
 if _PIPER_SDK_PATH not in sys.path:
     sys.path.insert(0, _PIPER_SDK_PATH)
 
 # openpi-client
 _OPENPI_CLIENT_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "packages", "openpi-client", "src"
+    os.path.dirname(__file__), "..", "..", "..", "packages", "openpi-client", "src"
 )
 if _OPENPI_CLIENT_PATH not in sys.path:
     sys.path.insert(0, _OPENPI_CLIENT_PATH)

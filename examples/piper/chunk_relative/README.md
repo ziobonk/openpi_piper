@@ -7,7 +7,7 @@
 数据集在本地生成，Git 会忽略它。如果尚未生成，可从本地的 `pick_cube_0928` 创建：
 
 ```bash
-.venv/bin/python examples/piper/prepare_chunk_relative_eef.py \
+.venv/bin/python examples/piper/chunk_relative/prepare_chunk_relative_eef.py \
   --source pick_cube_0928 --output pick_cube_0928_chunk_relative \
   --robot-open-width-mm 20
 ```
@@ -42,4 +42,4 @@ uv run scripts/serve_policy.py --port 6006 policy:checkpoint \
   --base-camera <serial> --wrist-camera <index> --steps 3
 ```
 
-先用较少的执行步数观察运动，确认正确后再增加 `--steps`。需要更多硬件参数或离线评估时，直接使用 `examples/piper/inference_eef.py`。
+先用较少的执行步数观察运动，确认正确后再增加 `--steps`。需要更多硬件参数或离线评估时，直接使用 `examples/piper/runtime/inference_eef.py`。

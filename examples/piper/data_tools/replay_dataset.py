@@ -5,9 +5,9 @@ Piper 机械臂数据集回放脚本。
 从 LeRobot 格式的本地数据集读取 action，逐帧回放到 Piper 机械臂上。
 
 用法:
-    python examples/piper/replay_dataset.py --data_dir /media/rhr/Doc/ubuntu/data
-    python examples/piper/replay_dataset.py --data_dir /media/rhr/Doc/ubuntu/data --episode 2
-    python examples/piper/replay_dataset.py --data_dir /media/rhr/Doc/ubuntu/data --speed 0.5 --loop
+    python examples/piper/data_tools/replay_dataset.py --data_dir /media/rhr/Doc/ubuntu/data
+    python examples/piper/data_tools/replay_dataset.py --data_dir /media/rhr/Doc/ubuntu/data --episode 2
+    python examples/piper/data_tools/replay_dataset.py --data_dir /media/rhr/Doc/ubuntu/data --speed 0.5 --loop
 
 前置条件:
     1. CAN 模块已激活:  bash can_activate.sh can0 1000000
@@ -49,7 +49,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Piper SDK 导入
 # ---------------------------------------------------------------------------
-PIPER_SDK_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "piper_sdk")
+PIPER_SDK_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "..", "piper_sdk")
 PIPER_EXAMPLES_PATH = os.path.dirname(__file__)
 if PIPER_SDK_PATH not in sys.path:
     sys.path.insert(0, PIPER_SDK_PATH)

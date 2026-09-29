@@ -3,16 +3,16 @@
 from pathlib import Path
 import queue
 import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import threading
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples" / "piper"))
 
-from inference_eef_async import EEFActionBuffer
-from inference_eef_async import PiperEEFAsyncInference
+from examples.piper.runtime.inference_eef_async import EEFActionBuffer
+from examples.piper.runtime.inference_eef_async import PiperEEFAsyncInference
 
 
 def _chunk(xs, angle=0.0):
@@ -67,6 +67,7 @@ def test_pause_discards_in_flight_inference_result():
     client._inferring = True
     client._generation = 1
     client._inference_rate = 3.0
+    client._model_action_frame = "robot_absolute"
     client._action_horizon = 2
     client._exec_horizon = 2
     client._latency_k = 8
@@ -120,6 +121,7 @@ def test_control_consumes_buffer_while_network_inference_is_blocked():
     client._generation = 1
     client._period = 0.05
     client._inference_rate = 3.0
+    client._model_action_frame = "robot_absolute"
     client._action_horizon = 1
     client._exec_horizon = 1
     client._latency_k = 8

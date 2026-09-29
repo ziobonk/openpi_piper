@@ -4,11 +4,10 @@
 import json
 from pathlib import Path
 import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-SCRIPT_DIR = Path(__file__).resolve().parents[1] / "examples" / "piper"
-sys.path.insert(0, str(SCRIPT_DIR))
 
-import export_raw_picodual_action as exporter
+from examples.piper.data_tools import export_raw_picodual_action as exporter
 
 
 def test_prompt_only_changes_both_task_metadata_files(tmp_path, monkeypatch):

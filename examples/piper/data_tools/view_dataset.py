@@ -9,9 +9,9 @@ Piper LeRobot 数据集可视化工具。
   pick up the pen and place it into the cup
 
 用法:
-    python examples/piper/view_dataset.py --data_dir ./piper_data
-    python examples/piper/view_dataset.py --data_dir data/dual_piper_lerobot --episode 0
-    python examples/piper/view_dataset.py --data_dir ./piper_data --gif output.gif
+    python examples/piper/data_tools/view_dataset.py --data_dir ./piper_data
+    python examples/piper/data_tools/view_dataset.py --data_dir data/dual_piper_lerobot --episode 0
+    python examples/piper/data_tools/view_dataset.py --data_dir ./piper_data --gif output.gif
 """
 
 import argparse

@@ -8,9 +8,9 @@
 机械臂 TCP。数据集 state 只有夹爪开度，位姿从 actions 读取。无需 PICO World
 到 Robot Base 的外参，但两端 TCP 原点和轴方向必须一致。
 
-    python examples/piper/replay_picodual_lerobot.py \
+    python examples/piper/data_tools/replay_picodual_lerobot.py \
         --data_dir ./pick_cube_chunk_relative --episode 0 --dry_run
-    python examples/piper/replay_picodual_lerobot.py \
+    python examples/piper/data_tools/replay_picodual_lerobot.py \
         --data_dir ./pick_cube_chunk_relative --episode 0 --step --speed 0.25
 
 以下为旧 ``pick_cube`` 数据集的约定。
@@ -33,11 +33,11 @@ SE(3) 位姿 ``D_dataset(t)``。若数据集安装关系与当前 ``pico_arm_tra
 
 用法：
     # 先离线检查旧 pick_cube 的转换范围
-    python examples/piper/replay_picodual_lerobot.py --data_dir ./pick_cube \
+    python examples/piper/data_tools/replay_picodual_lerobot.py --data_dir ./pick_cube \
         --episode 0 --adapt_dataset_tcp --dry_run
 
     # 上机逐帧确认（默认不控制夹爪）
-    python examples/piper/replay_picodual_lerobot.py --data_dir ./pick_cube \
+    python examples/piper/data_tools/replay_picodual_lerobot.py --data_dir ./pick_cube \
         --episode 0 --adapt_dataset_tcp --step --speed 0.25
 """
 
@@ -53,8 +53,9 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 HERE = Path(__file__).resolve().parent
-REPO_ROOT = HERE.parents[1]
-for import_path in (HERE, REPO_ROOT):
+PIPER_DIR = HERE.parent
+REPO_ROOT = HERE.parents[2]
+for import_path in (HERE, PIPER_DIR, REPO_ROOT):
     if str(import_path) not in sys.path:
         sys.path.insert(0, str(import_path))
 
@@ -188,7 +189,7 @@ def replay_chunk_relative(args) -> None:
         print("[DryRun] No robot connection or motion.")
         return
 
-    import inference_eef as eef
+    from examples.piper.runtime import inference_eef as eef
 
     robot = _build_gripper_and_robot(args, eef)
     if not robot.enable(speed_pct=args.speed_pct):
@@ -298,11 +299,11 @@ def _matrix_to_pose6(transform: np.ndarray) -> np.ndarray:
 
 def _current_controller_to_tcp() -> np.ndarray:
     """Derive current ``^C T_E`` from pico_arm_transform.py calibration."""
-    from pico_arm_transform import C_ARM_FROM_PICO
-    from pico_arm_transform import PICO_FROM_TCP_ARM_REFERENCE_METERS
-    from pico_arm_transform import Q_PICO_REFERENCE_XYZW
-    from pico_arm_transform import R_ARM_REFERENCE
-    from pico_arm_transform import quaternion_to_matrix
+    from examples.piper.transforms.pico_arm_transform import C_ARM_FROM_PICO
+    from examples.piper.transforms.pico_arm_transform import PICO_FROM_TCP_ARM_REFERENCE_METERS
+    from examples.piper.transforms.pico_arm_transform import Q_PICO_REFERENCE_XYZW
+    from examples.piper.transforms.pico_arm_transform import R_ARM_REFERENCE
+    from examples.piper.transforms.pico_arm_transform import quaternion_to_matrix
 
     alignment = (
         quaternion_to_matrix(Q_PICO_REFERENCE_XYZW).T
@@ -508,7 +509,7 @@ def main() -> None:
         print("\n[DryRun] 已跳过机械臂连接和运动执行。")
         return
 
-    import inference_eef as eef
+    from examples.piper.runtime import inference_eef as eef
 
     robot = _build_gripper_and_robot(args, eef)
     if not robot.enable(speed_pct=args.speed_pct):

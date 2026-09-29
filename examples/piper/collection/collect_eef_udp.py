@@ -8,14 +8,14 @@ state 是下发前读取的实际 TCP 位姿，actions 是这一帧下发的绝�
 的 GRIPPER_TCP_OFFSET_M 做补偿。夹爪宽度单位为 mm，不做 PICO 坐标转换。
 
 示例:
-    python examples/piper/collect_eef_udp.py --output ./piper_udp_eef \\
+    python examples/piper/collection/collect_eef_udp.py --output ./piper_udp_eef \\
         --rs2_base 231122071797 --usb_wrist 0 --can_name can0
 
     # 只检查 UDP，不连接机械臂或相机
-    python examples/piper/collect_eef_udp.py --udp_test --print_udp
+    python examples/piper/collection/collect_eef_udp.py --udp_test --print_udp
 
     # 无 UDP 测试采集：读取机械臂 EEF 和相机，不下发 EEF 移动指令
-    python examples/piper/collect_eef_udp.py --no_udp \\
+    python examples/piper/collection/collect_eef_udp.py --no_udp \\
         --rs2_base 231122071797 --usb_wrist 0
 
 按键: e 遥操开关, c 开始录制, s 后台保存本集, d 丢弃本集, r 回初始位姿,
@@ -41,7 +41,10 @@ import time
 import tty
 
 import cv2
-import inference_eef as eef
+from pathlib import Path as _Path
+sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+
+from examples.piper.runtime import inference_eef as eef
 import numpy as np
 from scipy.spatial.transform import Rotation
 

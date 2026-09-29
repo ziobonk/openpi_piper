@@ -22,25 +22,25 @@ Piper 机械臂上。增量语义与 ``src/openpi/training/config.py`` 中
 (默认读取其当前末端位姿) 复现记录轨迹的相对运动，对采集/回放两次标定之间的绝对
 偏移鲁棒。对比 ``--absolute`` 模式则是直接下发数据集中的绝对末端位姿。
 
-与 ``examples/piper/replay_dataset.py`` (关节空间) 的区别:
+与 ``examples/piper/data_tools/replay_dataset.py`` (关节空间) 的区别:
     - state/action 为 7 维 EEF 位姿 [x, y, z(m), rotvec(rad), gripper_width(mm)]。
     - 用 ``EndPoseCtrl`` 末端位姿模式控制 (``MotionCtrl_2 0x00``)。
     - 复用 ``inference_eef.py`` 的 PiperEEFController / DmGripperController。
 
 用法:
     # 增量模式回放 (默认，从机械臂当前末端位姿出发；未给 --episode 时启动交互选择)
-    python examples/piper/replay_dataset_eef.py --data_dir ./pick_place
-    python examples/piper/replay_dataset_eef.py --data_dir ./pick_place --episode 2
-    python examples/piper/replay_dataset_eef.py --data_dir ./pick_place --speed 0.5 --loop
+    python examples/piper/data_tools/replay_dataset_eef.py --data_dir ./pick_place
+    python examples/piper/data_tools/replay_dataset_eef.py --data_dir ./pick_place --episode 2
+    python examples/piper/data_tools/replay_dataset_eef.py --data_dir ./pick_place --speed 0.5 --loop
 
     # 不控制夹爪 (仅末端位姿，夹爪保持不动/手动控制)
-    python examples/piper/replay_dataset_eef.py --data_dir ./pick_place --no_gripper
+    python examples/piper/data_tools/replay_dataset_eef.py --data_dir ./pick_place --no_gripper
 
     # 绝对模式对比 (直接下发数据集绝对位姿，需 --no_align 时不做坐标系对齐)
-    python examples/piper/replay_dataset_eef.py --data_dir ./pick_place --absolute
+    python examples/piper/data_tools/replay_dataset_eef.py --data_dir ./pick_place --absolute
 
     # 仅查看数据集信息 (不回放，不连接机械臂)
-    python examples/piper/replay_dataset_eef.py --data_dir ./pick_place --info_only
+    python examples/piper/data_tools/replay_dataset_eef.py --data_dir ./pick_place --info_only
 
 前置条件:
     1. CAN 模块已激活:  bash can_activate.sh can0 1000000
@@ -65,6 +65,8 @@ import json
 import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from typing import Optional
 
 import numpy as np
@@ -224,7 +226,7 @@ class EEFDatasetReplayer:
         gripper_speed: float = DEFAULT_GRIPPER_SPEED_RAD_S,
     ):
         # 延迟导入: 复用 inference_eef.py 的 EEF 控制器与夹爪驱动，--info_only 不依赖 piper_sdk。
-        import inference_eef as eef
+        from examples.piper.runtime import inference_eef as eef
 
         self._data_dir = data_dir
         self._speed = speed
@@ -264,7 +266,7 @@ class EEFDatasetReplayer:
         self._robot = eef.PiperEEFController(can_name, gripper=gripper, control_gripper=control_gripper)
         self._pico_to_arm = None
         if self._absolute and self._align:
-            from pico_arm_transform import PicoToArmConverter
+            from examples.piper.transforms.pico_arm_transform import PicoToArmConverter
 
             self._pico_to_arm = PicoToArmConverter(
                 pico_reference_position=np.zeros(3, dtype=np.float64),

@@ -2,14 +2,20 @@
 
 将 openpi VLA 模型部署到 Piper 机械臂的完整方案：数据采集 → 训练 → 推理。
 
-## 文件说明
+## 目录说明
 
-| 文件 | 用途 |
+| 目录 | 用途 |
 |------|------|
-| `collect_demos.py` | 数据采集 — 录制 Piper 关节/夹爪/图像/指令为 LeRobot 格式 |
-| `inference.py` | 推理 — 连接 openpi 策略服务器，执行 receding horizon 控制 |
-| `../../src/openpi/policies/piper_policy.py` | 数据映射 — Piper ↔ openpi Observation/Actions 格式转换 |
-| `../../src/openpi/training/config.py` | 训练配置 — `pi05_piper` / `pi0_piper` 两个预设 |
+| `collection/` | Piper 示教采集与 UDP 采集 |
+| `data_tools/` | 数据转换、回放与可视化 |
+| `runtime/` | 相机、策略服务器客户端与机器人推理 |
+| `chunk_relative/` | PicoDual → Piper 的 chunk-relative 训练与推理入口，详见 [说明](chunk_relative/README.md) |
+| `transforms/` | PICO、TCP 和动作坐标变换 |
+| `hardware/`、`dm_gripper/` | 硬件控制检查与夹爪驱动 |
+| `experiments/` | 独立实验脚本 |
+| `cpp_convert/` | C++ 数据转换工具 |
+
+训练配置与数据变换仍位于 `src/openpi/training/` 和 `src/openpi/policies/`；通用训练与服务命令仍位于 `scripts/`。脚本应从仓库根目录按新路径运行，例如 `python examples/piper/collection/collect_demos.py`。旧的 `examples/piper/*.py` 命令路径已移除。
 
 ---
 
@@ -70,12 +76,12 @@ D435i 做基座/外部相机，D405 做腕部相机。记下对应序列号。
 
 ```bash
 # 数据采集
-python examples/piper/collect_demos.py \
+python examples/piper/collection/collect_demos.py \
     --repo_id your_hf_username/piper_data \
     --rs2_base 128422272318 --rs2_wrist 218722271368
 
 # 推理
-python examples/piper/inference.py \
+python examples/piper/runtime/inference.py \
     --host localhost \
     --rs2_base 128422272318 --rs2_wrist 218722271368
 ```
@@ -86,10 +92,10 @@ RealSense 在代码中自动配置为 **640×480@30fps** 采集，**等比缩放
 
 ```bash
 # 只有 D435i (基座)，没有腕部相机
-python examples/piper/inference.py --host localhost --rs2_base 128422272318
+python examples/piper/runtime/inference.py --host localhost --rs2_base 128422272318
 
 # 只有 D405 (腕部)，没有基座相机
-python examples/piper/inference.py --host localhost --rs2_wrist 218722271368
+python examples/piper/runtime/inference.py --host localhost --rs2_wrist 218722271368
 ```
 
 缺失的相机会自动填零（`piper_policy.PiperInputs` 中 `right_wrist_0_rgb` 已设为 `np.zeros` 并 `image_mask=False`）。
@@ -98,7 +104,7 @@ python examples/piper/inference.py --host localhost --rs2_wrist 218722271368
 
 如果没装 `pyrealsense2` 或想用普通 USB 相机：
 ```bash
-python examples/piper/inference.py --host localhost --cam_ids 0 2
+python examples/piper/runtime/inference.py --host localhost --cam_ids 0 2
 ```
 
 ---
@@ -146,14 +152,14 @@ task     str             →    task               →    prompt_from_task=True 
 
 ```bash
 # 本地模式 (推荐 — 不依赖 HuggingFace)
-python examples/piper/collect_demos.py --data_dir ./piper_data
+python examples/piper/collection/collect_demos.py --data_dir ./piper_data
 
 # 带相机
-python examples/piper/collect_demos.py --data_dir ./piper_data \
+python examples/piper/collection/collect_demos.py --data_dir ./piper_data \
     --rs2_base 128422272318 --rs2_wrist 218722271368
 
 # HF 模式 (需要联网，用于推送到 Hub 或从 Hub 加载)
-python examples/piper/collect_demos.py --repo_id your_hf_username/piper_data
+python examples/piper/collection/collect_demos.py --repo_id your_hf_username/piper_data
 ```
 
 **操作流程：**
@@ -302,13 +308,13 @@ uv run scripts/serve_policy.py policy:checkpoint \
 
 ```bash
 # 基础用法
-python examples/piper/inference.py --host <GPU_SERVER_IP> --port 8000
+python examples/piper/runtime/inference.py --host <GPU_SERVER_IP> --port 8000
 
 # 带相机
-python examples/piper/inference.py --host 192.168.1.100 --cam_ids 0
+python examples/piper/runtime/inference.py --host 192.168.1.100 --cam_ids 0
 
 # 交互模式 (手动输入指令)
-python examples/piper/inference.py --host localhost --interactive
+python examples/piper/runtime/inference.py --host localhost --interactive
 ```
 
 **控制：** Enter 开始推理 | s 暂停 | r 回初始位姿 | q 退出

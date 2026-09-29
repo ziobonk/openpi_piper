@@ -365,7 +365,7 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
 class LeRobotPiperDataConfig(DataConfigFactory):
     """Piper 机械臂训练数据配置。
 
-    数据采集脚本 ``examples/piper/collect_demos.py`` 产生的 LeRobot 数据集
+    数据采集脚本 ``examples/piper/collection/collect_demos.py`` 产生的 LeRobot 数据集
     包含以下 feature:
         - state:  float32 (7,)  [j1..j6(rad), gripper(raw_0.001mm)]
         - actions: float32 (7,)  同上（采集时 = 当前 state）

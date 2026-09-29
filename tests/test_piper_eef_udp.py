@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import queue
 import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import threading
 import time
 from types import SimpleNamespace
@@ -15,17 +16,16 @@ import pyarrow.parquet as parquet
 import pytest
 from scipy.spatial.transform import Rotation
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples" / "piper"))
 
-import collect_eef_udp as collector
-from collect_eef_udp import BASE_SHAPE
-from collect_eef_udp import WRIST_SHAPE
-from collect_eef_udp import PickPlaceWriter
-from collect_eef_udp import _record_pose
-from collect_eef_udp import apply_delta
-from collect_eef_udp import parse_arm_sample
-from collect_eef_udp import tracker_delta
-import inference_eef as eef
+from examples.piper.collection import collect_eef_udp as collector
+from examples.piper.collection.collect_eef_udp import BASE_SHAPE
+from examples.piper.collection.collect_eef_udp import WRIST_SHAPE
+from examples.piper.collection.collect_eef_udp import PickPlaceWriter
+from examples.piper.collection.collect_eef_udp import _record_pose
+from examples.piper.collection.collect_eef_udp import apply_delta
+from examples.piper.collection.collect_eef_udp import parse_arm_sample
+from examples.piper.collection.collect_eef_udp import tracker_delta
+from examples.piper.runtime import inference_eef as eef
 
 
 def _jpeg(shape):

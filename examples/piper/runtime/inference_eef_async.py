@@ -7,7 +7,7 @@ CONTROL_FREQ 执行动作。新动作块按观测之后已经执行的步数跳�
 缓冲区的剩余动作平滑衔接。
 
 用法:
-    python examples/piper/inference_eef_async.py --host localhost --port 6006 \\
+    python examples/piper/runtime/inference_eef_async.py --host localhost --port 6006 \\
         --rs2_base 231122071797 --usb_wrist 0
 
 按 Enter 开始、s 暂停、r 重置、q 退出。--interactive 在每次开始前输入指令。
@@ -18,12 +18,15 @@ import argparse
 from collections import deque
 import queue
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 import threading
 import time
 from typing import Optional
 
 import cv2
-import inference_eef as eef
+from examples.piper.runtime import inference_eef as eef
 import numpy as np
 from scipy.spatial.transform import Rotation
 

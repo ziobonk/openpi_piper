@@ -2,7 +2,7 @@
 """夹爪控制测试 —— 排查闭合失败的原因。"""
 
 import sys, os, time
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "piper_sdk"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "piper_sdk"))
 from piper_sdk import C_PiperInterface_V2
 
 CAN = sys.argv[1] if len(sys.argv) > 1 else "can0"

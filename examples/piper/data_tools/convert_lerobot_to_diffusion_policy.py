@@ -10,17 +10,17 @@
 
 用法:
     # joint 模式数据集 (eef_pose 为占位符)
-    python examples/piper/convert_lerobot_to_diffusion_policy.py \
+    python examples/piper/data_tools/convert_lerobot_to_diffusion_policy.py \
         --input data/dual_piper_lerobot \
         --output /home/rhr/diffusion_policy_piper/data/test
 
     # eef 模式数据集 (真实的 xyz/rpy)
-    python examples/piper/convert_lerobot_to_diffusion_policy.py \
+    python examples/piper/data_tools/convert_lerobot_to_diffusion_policy.py \
         --input data/dual_piper_eef_lerobot \
         --output /home/rhr/diffusion_policy_piper/data/test_eef
 
     # 只转换前 3 个 episode (测试用)
-    python examples/piper/convert_lerobot_to_diffusion_policy.py \
+    python examples/piper/data_tools/convert_lerobot_to_diffusion_policy.py \
         --input data/dual_piper_eef_lerobot \
         --output /tmp/test_convert -n 3
 

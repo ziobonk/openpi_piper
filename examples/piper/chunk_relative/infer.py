@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 
 PIPER_DIR = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PIPER_DIR))
+sys.path.insert(0, str(PIPER_DIR / "runtime"))
 import inference_eef  # noqa: E402
 
 PROMPT = "<control mode> end effector <control mode>pick up the blue cube and place it on the yellow cube."

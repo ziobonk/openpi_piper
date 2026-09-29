@@ -10,11 +10,11 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "examples" / "piper"))
 
-import inference_eef as eef
-from inference_eef_async import PiperEEFAsyncInference
+from examples.piper.runtime import inference_eef as eef
+from examples.piper.runtime.inference_eef_async import PiperEEFAsyncInference
 
 from openpi.policies.piper_chunk_relative import ChunkRelativeEEFActions
 

@@ -3,16 +3,16 @@
 import json
 from pathlib import Path
 import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 import numcodecs
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples" / "piper"))
 
-from convert_picodual_to_lerobot import prepare_episode_actions
-from convert_picodual_to_lerobot import prepare_episode_pose_data
-from convert_picodual_to_lerobot import read_numeric_array
+from examples.piper.data_tools.convert_picodual_to_lerobot import prepare_episode_actions
+from examples.piper.data_tools.convert_picodual_to_lerobot import prepare_episode_pose_data
+from examples.piper.data_tools.convert_picodual_to_lerobot import read_numeric_array
 
 
 def test_numeric_zarr_chunks_keep_exact_row_count(tmp_path):

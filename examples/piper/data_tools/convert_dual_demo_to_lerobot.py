@@ -8,13 +8,13 @@
 
 用法:
     # EEF 模式 (默认)
-    python examples/piper/convert_dual_demo_to_lerobot.py
+    python examples/piper/data_tools/convert_dual_demo_to_lerobot.py
 
     # 关节模式
-    python examples/piper/convert_dual_demo_to_lerobot.py --mode joint
+    python examples/piper/data_tools/convert_dual_demo_to_lerobot.py --mode joint
 
     # 指定输入输出
-    python examples/piper/convert_dual_demo_to_lerobot.py \
+    python examples/piper/data_tools/convert_dual_demo_to_lerobot.py \
         --input /home/rhr/diffusion_policy_piper/data/vr_fold/replay_buffer.zarr \
         --output data/vr_fold \
         --mode joint

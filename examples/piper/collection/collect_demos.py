@@ -7,28 +7,28 @@ Piper 机械臂数据采集脚本。
 
 用法:
     # 保存到本地目录 (推荐)
-    python examples/piper/collect_demos.py --data_dir ./piper_data
+    python examples/piper/collection/collect_demos.py --data_dir ./piper_data
 
     # HuggingFace 模式 (需要联网)
-    python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task
+    python examples/piper/collection/collect_demos.py --repo_id your_hf_username/piper_task
 
     # RealSense D435i/D405 相机
-    python examples/piper/collect_demos.py --data_dir ./piper_data \
+    python examples/piper/collection/collect_demos.py --data_dir ./piper_data \
         --rs2_base 231122071797 --rs2_wrist 260322279175
 
     # OpenCV webcam 回退
-    python examples/piper/collect_demos.py --data_dir ./piper_data \
+    python examples/piper/collection/collect_demos.py --data_dir ./piper_data \
         --cam_ids 0 2
 
     # 覆盖已有数据集
-    python examples/piper/collect_demos.py --data_dir ./piper_data --overwrite
+    python examples/piper/collection/collect_demos.py --data_dir ./piper_data --overwrite
 
     # 带 token 登录 (不需 huggingface-cli login)
-    python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task \
+    python examples/piper/collection/collect_demos.py --repo_id your_hf_username/piper_task \
         --stream_hub --hf_token hf_xxxxxx
 
     # 采集完成后一次性推送到 HuggingFace Hub
-    python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task \
+    python examples/piper/collection/collect_demos.py --repo_id your_hf_username/piper_task \
         --push_to_hub
 
 前置条件:
@@ -63,7 +63,6 @@ from typing import Optional
 import numpy as np
 
 # --- 相机工具 (支持 RealSense D435i/D405 和 OpenCV) ---
-from camera_utils import RealSenseCameras, OpenCVCameras, create_cameras
 
 try:
     import cv2
@@ -77,12 +76,14 @@ except ImportError:
 # 注意: 需要先将 piper_sdk 安装到当前 Python 环境:
 #   cd piper_sdk && pip install .
 # 或将 piper_sdk 目录加入 sys.path:
-PIPER_SDK_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "piper_sdk")
-PIPER_EXAMPLES_PATH = os.path.dirname(__file__)
+PIPER_SDK_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "..", "piper_sdk")
+PIPER_EXAMPLES_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if PIPER_SDK_PATH not in sys.path:
     sys.path.insert(0, PIPER_SDK_PATH)
 if PIPER_EXAMPLES_PATH not in sys.path:
     sys.path.insert(0, PIPER_EXAMPLES_PATH)
+
+from examples.piper.runtime.camera_utils import RealSenseCameras, OpenCVCameras, create_cameras
 
 try:
     from piper_sdk import C_PiperInterface_V2  # type: ignore[import-untyped]

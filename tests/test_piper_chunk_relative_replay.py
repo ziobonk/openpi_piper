@@ -10,11 +10,11 @@ import pandas as pd
 from scipy.spatial.transform import Rotation
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "examples" / "piper"))
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from replay_picodual_lerobot import chunk_relative_targets, load_chunk_relative_episode
-from visualize_picodual_dataset import load_episode, stitch_training_chunks, training_chunk_actions
+from examples.piper.data_tools.replay_picodual_lerobot import chunk_relative_targets, load_chunk_relative_episode
+from examples.piper.data_tools.visualize_picodual_dataset import load_episode, stitch_training_chunks, training_chunk_actions
 
 
 def _matrix(pose):

@@ -15,6 +15,9 @@ import argparse
 import json
 import os
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 import shutil
 import tempfile
 import uuid
@@ -23,8 +26,8 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from convert_picodual_to_lerobot import main as convert_main
-from convert_picodual_to_lerobot import read_numeric_array
+from examples.piper.data_tools.convert_picodual_to_lerobot import main as convert_main
+from examples.piper.data_tools.convert_picodual_to_lerobot import read_numeric_array
 
 
 def fill_missing_pose(values: np.ndarray) -> np.ndarray:

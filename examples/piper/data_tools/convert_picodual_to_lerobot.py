@@ -44,7 +44,7 @@ No PICO-World-to-robot-base extrinsic is used. State/action poses are D(t)
 encoded as translation + rotation vector; action[t] is D(t+1).
 
 Usage:
-    python examples/piper/convert_picodual_to_lerobot.py \
+    python examples/piper/data_tools/convert_picodual_to_lerobot.py \
         --input data/test.zarr \
         --output ./pick_place \
         --controller-to-tcp 0 0 0.15 0 0 0 1 \
@@ -62,10 +62,10 @@ import numpy as np
 import numcodecs
 from scipy.spatial.transform import Rotation
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from pico_relative_se3 import invert_transform
-from pico_relative_se3 import pose_to_matrix
-from pico_relative_se3 import relative_transform
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from examples.piper.transforms.pico_relative_se3 import invert_transform
+from examples.piper.transforms.pico_relative_se3 import pose_to_matrix
+from examples.piper.transforms.pico_relative_se3 import relative_transform
 
 # ---------------------------------------------------------------------------
 # 配置
