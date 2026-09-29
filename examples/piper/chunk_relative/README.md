@@ -1,15 +1,10 @@
-# PicoDual → Piper: chunk-relative pi05
+# PicoDual → Piper：chunk-relative pi05
 
-This workflow uses `pick_cube_0928_chunk_relative`: 20 Hz, base and wrist images,
-1D gripper state in millimetres, and 7D absolute PICO World TCP actions. Each
-sampled 50-step action window is converted to `inv(T_action[0]) @ T_action[k]`;
-the gripper target remains an absolute width. The first action is same-frame and
-is skipped by the live client. The model action representation remains rotvec.
+本流程使用 `pick_cube_0928_chunk_relative` 数据集：采样频率为 20 Hz，包含基座和腕部图像、以毫米为单位的 1 维夹爪状态，以及 PICO World 坐标系下 7 维的绝对 TCP 动作。训练时，每个 50 步动作块都转换为相对首步的位姿 `inv(T_action[0]) @ T_action[k]`；夹爪目标仍是绝对开度。第 0 步是与观测同帧的动作，真机推理时会跳过。旋转仍使用 rotvec 表示。
 
-## Data and statistics
+## 数据与归一化统计
 
-The dataset is generated locally and is ignored by Git. If it is absent, create
-it from the untracked `pick_cube_0928` source:
+数据集在本地生成，Git 会忽略它。如果尚未生成，可从本地的 `pick_cube_0928` 创建：
 
 ```bash
 .venv/bin/python examples/piper/prepare_chunk_relative_eef.py \
@@ -17,19 +12,15 @@ it from the untracked `pick_cube_0928` source:
   --robot-open-width-mm 20
 ```
 
-Compute statistics from valid action rows only; this reads no images. Statistics
-and the manifest are written under `assets/` and are ignored by Git. The
-statistics must travel with the checkpoint or be recomputed from the same data.
+下面的脚本只读取有效动作和状态，不解码图像，也不把 episode 末尾的填充动作计入统计。统计文件和说明文件写入 `assets/`，同样由 Git 忽略。迁移检查点时需要一并保留对应统计，或从同一份数据重新计算。
 
 ```bash
 .venv/bin/python examples/piper/chunk_relative/compute_norm_stats.py
 ```
 
-The dedicated config is `pi05_piper_pick_cube_0928_chunk_relative`. It does not
-reuse the older `pick_cube_chunk_relative` statistics. Sync the dataset separately
-when training on another machine.
+专用训练配置为 `pi05_piper_pick_cube_0928_chunk_relative`，不会复用旧数据集 `pick_cube_chunk_relative` 的统计。在其他机器训练时，还需单独同步数据集。
 
-## Train and serve
+## 训练与启动服务
 
 ```bash
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train.py \
@@ -40,20 +31,15 @@ uv run scripts/serve_policy.py --port 6006 policy:checkpoint \
   --policy.dir=checkpoints/pi05_piper_pick_cube_0928_chunk_relative/pick_cube_0928/<step>
 ```
 
-Replace `<step>` with a completed checkpoint step. Before live execution,
-check the camera order, TCP axes and origin, gripper feedback, and target motion
-using the existing offline evaluator or dry-run replay.
+将 `<step>` 换成已保存的检查点步数。上真机前，先通过现有离线评估或空跑回放，核对相机顺序、TCP 坐标轴与原点、夹爪反馈及目标运动方向。
 
-## Live client
+## 真机推理
 
-The focused client fixes the task prompt, action frame, and 50-step model
-horizon. It exposes only the server, camera, and execution-step settings:
+专用入口固定了任务指令、动作坐标系和模型的 50 步 horizon；命令行只需设置服务器、相机和每次执行步数：
 
 ```bash
 .venv/bin/python examples/piper/chunk_relative/infer.py \
   --base-camera <serial> --wrist-camera <index> --steps 3
 ```
 
-Start with a short execution block; increase `--steps` only after observing
-correct motion. For advanced hardware settings and offline evaluation, use
-`examples/piper/inference_eef.py` directly.
+先用较少的执行步数观察运动，确认正确后再增加 `--steps`。需要更多硬件参数或离线评估时，直接使用 `examples/piper/inference_eef.py`。
