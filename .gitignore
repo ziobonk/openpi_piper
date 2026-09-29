@@ -17,6 +17,9 @@ build
 piper_sdk
 *.pdf
 *.gif
+/move_*/
+/test_line/
+/third_party/aloha/aloha2/workcell_v2/Aloha workcell v2.stl
 
 
 # C extensions

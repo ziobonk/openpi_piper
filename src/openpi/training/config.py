@@ -1241,6 +1241,36 @@ _CONFIGS = [
         save_interval=2000,
         keep_period=10000,
     ),
+    # Current PicoDual pick-and-place data; keep its statistics separate from
+    # the older pick_cube_chunk_relative experiment above.
+    TrainConfig(
+        name="pi05_piper_pick_cube_0928_chunk_relative",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=50,
+            discrete_state_input=False,
+        ),
+        data=LeRobotPiperChunkRelativeDataConfig(
+            repo_id="pick_cube_0928_chunk_relative",
+            assets=AssetsConfig(),
+            base_config=DataConfig(prompt_from_task=True),
+            local_data_dir="./pick_cube_0928_chunk_relative",
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        batch_size=8,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-4,
+            decay_steps=50_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        num_train_steps=30_000,
+        save_interval=2000,
+        keep_period=10000,
+    ),
     #
     # Fine-tuning Single-arm Piper EEF LoRA config (单臂末端位姿增量, 低显存).
     #

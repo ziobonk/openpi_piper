@@ -1818,7 +1818,7 @@ class _FPSCounter:
 # ===========================================================================
 
 
-def _parse_args(parser=None):
+def _parse_args(parser=None, argv=None):
     import argparse
 
     p = parser or argparse.ArgumentParser(description="Piper EEF 策略服务器推理客户端")
@@ -1998,7 +1998,7 @@ def _parse_args(parser=None):
     p.add_argument("--max_frames", type=int, default=0, help="最多评测多少帧 (默认 0=全部)")
     p.add_argument("--gif_fps", type=int, default=15, help=f"GIF 帧率 (默认: 15)")
     p.add_argument("--no_show", action="store_true", help="不弹出交互可视化窗口 (配合 --gif 无头导出)")
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 def main(args=None):
