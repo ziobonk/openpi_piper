@@ -7,7 +7,7 @@ PICO World TCP 轨迹，并按训练时的 ``inv(T_actions[0]) @ T_actions[k]``
 显示每个 50 步动作块。可用 ``--tcp_start_pose`` 查看映射到 Robot Base 后的目标。
 
     python examples/piper/data_tools/visualize_picodual_dataset.py \
-        --data_dir ./pick_cube_chunk_relative --episode 0 --view training_chunk
+        --data_dir ./local/datasets/pick_cube_chunk_relative --episode 0 --view training_chunk
 
 
 
@@ -20,32 +20,32 @@ PICO-relative 轨迹，使用 ``--model_action_frame pico`` 可按
 ``inference_action_transform.py`` 的标定转换到当前 TCP-relative 后再显示。
 
 示例：
-    python examples/piper/data_tools/visualize_picodual_dataset.py --data_dir ./pick_cube --episode 0
+    python examples/piper/data_tools/visualize_picodual_dataset.py --data_dir ./local/datasets/pick_cube --episode 0
 
     # 同时查看 50 步当前 chunk、已拼接历史 chunk 和灰色完整轨迹
-    python examples/piper/data_tools/visualize_picodual_dataset.py --data_dir ./pick_cube \
+    python examples/piper/data_tools/visualize_picodual_dataset.py --data_dir ./local/datasets/pick_cube \
         --episode 0 --view training_chunk
 
     # 原始 PICO 数据：用机器人初始 TCP 位姿显示 Robot Base 下的训练轨迹
     python examples/piper/data_tools/visualize_picodual_dataset.py \
-        --data_dir ./pick_cube_raw_action --episode 0 --view training_chunk \
+        --data_dir ./local/datasets/pick_cube_raw_action --episode 0 --view training_chunk \
         --tcp_start_pose 0.3404 0.0074 0.2504 -0.5464 1.7926 -0.024
 
     # 在连接 Piper 的机器上直接读取当前 TCP 位姿作为 Robot Base 起点
     python examples/piper/data_tools/visualize_picodual_dataset.py \
-        --data_dir ./pick_cube_raw_action --episode 0 --view training_chunk \
+        --data_dir ./local/datasets/pick_cube_raw_action --episode 0 --view training_chunk \
         --tcp_start_from_piper --can_name can0
 
     # 仅导出第 2 个 chunk（起点为第 100 帧）
-    python examples/piper/data_tools/visualize_picodual_dataset.py --data_dir ./pick_cube \
+    python examples/piper/data_tools/visualize_picodual_dataset.py --data_dir ./local/datasets/pick_cube \
         --episode 0 --view training_chunk --start 100 --end 101 \
         --output chunk2.gif --no_show
 
     # 仅用于 state/actions 是 PICO-relative 的数据集
-    python examples/piper/data_tools/visualize_picodual_dataset.py --data_dir ./pick_cube \
+    python examples/piper/data_tools/visualize_picodual_dataset.py --data_dir ./local/datasets/pick_cube \
         --episode 0 --model_action_frame pico
 
-    python examples/piper/data_tools/visualize_picodual_dataset.py --data_dir ./pick_cube \
+    python examples/piper/data_tools/visualize_picodual_dataset.py --data_dir ./local/datasets/pick_cube \
         --episode 0 --tcp_frame current --output pick_cube_ep0.gif --no_show
 
     # 使用回放日志中的 Robot start TCP，在 Robot Base 坐标系中显示目标轨迹
@@ -739,7 +739,7 @@ class DatasetViewer:
 
 def parse_args():
     parser = argparse.ArgumentParser(description="可视化 PicoDual → LeRobot EEF 数据集")
-    parser.add_argument("--data_dir", default="./pick_cube", help="LeRobot 数据集目录")
+    parser.add_argument("--data_dir", default="./local/datasets/pick_cube", help="LeRobot 数据集目录")
     parser.add_argument("--episode", type=int, default=None, help="episode 编号，默认第一个")
     parser.add_argument("--view", choices=("episode", "training_chunk"), default="episode",
                         help="episode 全轨迹，或叠加当前 chunk、拼接历史与完整轨迹")

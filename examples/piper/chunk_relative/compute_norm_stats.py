@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "src"))
 from openpi.shared import normalize  # noqa: E402
 
 CONFIG_NAME = "pi05_piper_pick_cube_0928_chunk_relative"
-DATASET = ROOT / "pick_cube_0928_chunk_relative"
+DATASET = ROOT / "local" / "datasets" / "pick_cube_0928_chunk_relative"
 HORIZON = 50
 # Keep the pooled quantile scale well-defined for almost-static dimensions.
 MIN_Q_RANGE = np.array([0.001] * 3 + [0.01] * 3 + [0.1], dtype=np.float64)

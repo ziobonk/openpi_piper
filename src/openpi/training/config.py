@@ -380,7 +380,7 @@ class LeRobotPiperDataConfig(DataConfigFactory):
     # 如果数据中的 actions 是绝对关节位姿 (采集时即如此)，需要对关节做 delta 转换。
     # Piper 采集默认记录绝对位姿，所以需要打开此开关。
     use_delta_joint_actions: bool = True
-    # 本地数据集路径 (如 ./piper_data)，设置后不从 HuggingFace 加载
+    # 本地数据集路径 (如 ./local/datasets/piper_data)，设置后不从 HuggingFace 加载
     local_data_dir: str | None = None
 
     @override
@@ -1103,7 +1103,7 @@ _CONFIGS = [
             assets=AssetsConfig(),  # asset_id 自动取 repo_id
             base_config=DataConfig(prompt_from_task=True),
             use_delta_joint_actions=True,
-            local_data_dir="./piper_data",  # 本地数据集路径
+            local_data_dir="./local/datasets/piper_data",  # 本地数据集路径
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         batch_size=8,  # 24GB 卡; 更大的卡可调高
@@ -1135,7 +1135,7 @@ _CONFIGS = [
             assets=AssetsConfig(),
             base_config=DataConfig(prompt_from_task=True),
             use_delta_joint_actions=True,
-            local_data_dir="./piper_data",
+            local_data_dir="./local/datasets/piper_data",
         ),
         freeze_filter=pi0_config.Pi0Config(
             pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant='gemma_300m_lora'
@@ -1165,7 +1165,7 @@ _CONFIGS = [
             assets=AssetsConfig(),
             base_config=DataConfig(prompt_from_task=True),
             use_delta_joint_actions=True,
-            local_data_dir="./piper_data",
+            local_data_dir="./local/datasets/piper_data",
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         batch_size=8,
@@ -1195,7 +1195,7 @@ _CONFIGS = [
             assets=AssetsConfig(),
             base_config=DataConfig(prompt_from_task=True),
             use_delta_pose_actions=True,
-            local_data_dir="./pick_cube_raw_action",
+            local_data_dir="./local/datasets/pick_cube_raw_action",
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         batch_size=8,
@@ -1225,7 +1225,7 @@ _CONFIGS = [
             repo_id="pick_cube_chunk_relative",
             assets=AssetsConfig(),
             base_config=DataConfig(prompt_from_task=True),
-            local_data_dir="./pick_cube_chunk_relative",
+            local_data_dir="./local/datasets/pick_cube_chunk_relative",
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         batch_size=8,
@@ -1255,7 +1255,7 @@ _CONFIGS = [
             repo_id="pick_cube_0928_chunk_relative",
             assets=AssetsConfig(),
             base_config=DataConfig(prompt_from_task=True),
-            local_data_dir="./pick_cube_0928_chunk_relative",
+            local_data_dir="./local/datasets/pick_cube_0928_chunk_relative",
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         batch_size=8,
@@ -1289,7 +1289,7 @@ _CONFIGS = [
             assets=AssetsConfig(),
             base_config=DataConfig(prompt_from_task=True),
             use_delta_pose_actions=True,
-            local_data_dir="./pick_place",
+            local_data_dir="./local/datasets/pick_place",
         ),
         freeze_filter=pi0_config.Pi0Config(
             pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
@@ -1324,7 +1324,7 @@ _CONFIGS = [
             assets=AssetsConfig(),
             base_config=DataConfig(prompt_from_task=True),
             use_delta_joint_actions=False,  # EEF 是绝对位姿
-            local_data_dir="./data/dual_piper_eef_lerobot",
+            local_data_dir="./local/datasets/dual_piper_eef_lerobot",
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         batch_size=2,  # 双臂 + 三路相机显存消耗大，先保守
@@ -1352,7 +1352,7 @@ _CONFIGS = [
             assets=AssetsConfig(),
             base_config=DataConfig(prompt_from_task=True),
             use_delta_joint_actions=False,
-            local_data_dir="./data/dual_piper_eef_lerobot",
+            local_data_dir="./local/datasets/dual_piper_eef_lerobot",
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         batch_size=2,
@@ -1385,7 +1385,7 @@ _CONFIGS = [
             assets=AssetsConfig(),
             base_config=DataConfig(prompt_from_task=True),
             use_delta_joint_actions=True,
-            local_data_dir="./data/dual_piper_joint_lerobot",
+            local_data_dir="./local/datasets/dual_piper_joint_lerobot",
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         batch_size=2,
@@ -1413,7 +1413,7 @@ _CONFIGS = [
             assets=AssetsConfig(),
             base_config=DataConfig(prompt_from_task=True),
             use_delta_joint_actions=True,
-            local_data_dir="./data/dual_piper_joint_lerobot",
+            local_data_dir="./local/datasets/dual_piper_joint_lerobot",
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         batch_size=2,
@@ -1449,7 +1449,7 @@ _CONFIGS = [
             assets=AssetsConfig(),
             base_config=DataConfig(prompt_from_task=True),
             use_delta_joint_actions=False,
-            local_data_dir="./data/dual_piper_joint_lerobot",
+            local_data_dir="./local/datasets/dual_piper_joint_lerobot",
         ),
         freeze_filter=pi0_config.Pi0Config(
             pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
@@ -1482,7 +1482,7 @@ _CONFIGS = [
             assets=AssetsConfig(),
             base_config=DataConfig(prompt_from_task=True),
             use_delta_joint_actions=True,
-            local_data_dir="./data/dual_piper_joint_lerobot",
+            local_data_dir="./local/datasets/dual_piper_joint_lerobot",
         ),
         freeze_filter=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"

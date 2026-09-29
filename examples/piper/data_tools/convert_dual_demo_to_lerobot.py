@@ -235,10 +235,10 @@ def _process_episode_worker(args: tuple) -> dict:
 
 def main():
     p = argparse.ArgumentParser(description="Convert dual-piper zarr to LeRobot format")
-    p.add_argument("--input", default="data/dual_demo/replay_buffer.zarr",
-                   help="输入 zarr 路径 (默认: data/dual_demo/replay_buffer.zarr)")
+    p.add_argument("--input", default="local/zarr/dual_demo/replay_buffer.zarr",
+                   help="输入 zarr 路径 (默认: local/zarr/dual_demo/replay_buffer.zarr)")
     p.add_argument("--output", default=None,
-                   help="输出目录 (默认: data/dual_piper_{mode}_lerobot)")
+                   help="输出目录 (默认: local/datasets/dual_piper_{mode}_lerobot)")
     p.add_argument("--mode", choices=[MODE_EEF, MODE_JOINT], default=MODE_EEF,
                    help="控制模式: eef (末端位姿) | joint (关节角)")
     p.add_argument("--fps", type=int, default=FPS, help=f"帧率 (默认: {FPS})")
@@ -251,7 +251,7 @@ def main():
         sys.exit(1)
 
     mode = args.mode
-    output_dir = args.output or f"data/dual_piper_{mode}_lerobot"
+    output_dir = args.output or f"local/datasets/dual_piper_{mode}_lerobot"
     robot_type = f"piper_dual_{mode}"
 
     print(f"[INFO] 模式: {mode}")

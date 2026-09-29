@@ -7,21 +7,21 @@ Piper 机械臂数据采集脚本。
 
 用法:
     # 保存到本地目录 (推荐)
-    python examples/piper/collection/collect_demos.py --data_dir ./piper_data
+    python examples/piper/collection/collect_demos.py --data_dir ./local/datasets/piper_data
 
     # HuggingFace 模式 (需要联网)
     python examples/piper/collection/collect_demos.py --repo_id your_hf_username/piper_task
 
     # RealSense D435i/D405 相机
-    python examples/piper/collection/collect_demos.py --data_dir ./piper_data \
+    python examples/piper/collection/collect_demos.py --data_dir ./local/datasets/piper_data \
         --rs2_base 231122071797 --rs2_wrist 260322279175
 
     # OpenCV webcam 回退
-    python examples/piper/collection/collect_demos.py --data_dir ./piper_data \
+    python examples/piper/collection/collect_demos.py --data_dir ./local/datasets/piper_data \
         --cam_ids 0 2
 
     # 覆盖已有数据集
-    python examples/piper/collection/collect_demos.py --data_dir ./piper_data --overwrite
+    python examples/piper/collection/collect_demos.py --data_dir ./local/datasets/piper_data --overwrite
 
     # 带 token 登录 (不需 huggingface-cli login)
     python examples/piper/collection/collect_demos.py --repo_id your_hf_username/piper_task \
@@ -248,7 +248,7 @@ class CollectConfig:
       - HF 模式: 指定 repo_id，数据保存到 HF_LEROBOT_HOME 下
     """
 
-    # 本地保存目录 (如 ./piper_data)。与 repo_id 二选一至少指定一个。
+    # 本地保存目录 (如 ./local/datasets/piper_data)。与 repo_id 二选一至少指定一个。
     data_dir: Optional[str] = None
     # LeRobot 数据集名称 (HF 模式, 如 your_hf_username/piper_data)
     repo_id: Optional[str] = None
@@ -811,7 +811,7 @@ def _parse_args() -> CollectConfig:
     import argparse
 
     p = argparse.ArgumentParser(description="Piper 机械臂数据采集脚本")
-    p.add_argument("--data_dir", default=None, help="本地保存目录 (如 ./piper_data)。与 --repo_id 二选一")
+    p.add_argument("--data_dir", default=None, help="本地保存目录 (如 ./local/datasets/piper_data)。与 --repo_id 二选一")
     p.add_argument("--repo_id", default=None, help="HF 数据集名称 (如 your_hf_username/piper_data)。与 --data_dir 二选一")
     p.add_argument("--can_name", default="can0", help="CAN 端口名称 (默认: can0)")
     p.add_argument("--fps", type=int, default=COLLECT_FPS, help=f"采集频率 (默认: {COLLECT_FPS})")

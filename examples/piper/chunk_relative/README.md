@@ -1,14 +1,14 @@
 # PicoDual → Piper：chunk-relative pi05
 
-本流程使用 `pick_cube_0928_chunk_relative` 数据集：采样频率为 20 Hz，包含基座和腕部图像、以毫米为单位的 1 维夹爪状态，以及 PICO World 坐标系下 7 维的绝对 TCP 动作。训练时，每个 50 步动作块都转换为相对首步的位姿 `inv(T_action[0]) @ T_action[k]`；夹爪目标仍是绝对开度。第 0 步是与观测同帧的动作，真机推理时会跳过。旋转仍使用 rotvec 表示。
+本流程使用 `local/datasets/pick_cube_0928_chunk_relative` 数据集：采样频率为 20 Hz，包含基座和腕部图像、以毫米为单位的 1 维夹爪状态，以及 PICO World 坐标系下 7 维的绝对 TCP 动作。训练时，每个 50 步动作块都转换为相对首步的位姿 `inv(T_action[0]) @ T_action[k]`；夹爪目标仍是绝对开度。第 0 步是与观测同帧的动作，真机推理时会跳过。旋转仍使用 rotvec 表示。
 
 ## 数据与归一化统计
 
-数据集在本地生成，Git 会忽略它。如果尚未生成，可从本地的 `pick_cube_0928` 创建：
+数据集在本地 `local/datasets/` 下生成，Git 会忽略整个 `local/`。如果尚未生成，可从本地的 `local/datasets/pick_cube_0928` 创建：
 
 ```bash
 .venv/bin/python examples/piper/chunk_relative/prepare_chunk_relative_eef.py \
-  --source pick_cube_0928 --output pick_cube_0928_chunk_relative \
+  --source local/datasets/pick_cube_0928 --output local/datasets/pick_cube_0928_chunk_relative \
   --robot-open-width-mm 20
 ```
 
@@ -23,7 +23,7 @@
 ## 训练与启动服务
 
 ```bash
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train.py \
+WANDB_DIR=local/runs/wandb XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train.py \
   pi05_piper_pick_cube_0928_chunk_relative --exp-name=pick_cube_0928
 
 uv run scripts/serve_policy.py --port 6006 policy:checkpoint \

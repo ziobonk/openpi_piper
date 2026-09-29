@@ -130,8 +130,8 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0) ->
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, default=Path("pick_cube_raw_action"))
-    parser.add_argument("--output", type=Path, default=Path("pick_cube_chunk_relative"))
+    parser.add_argument("--source", type=Path, default=Path("local/datasets/pick_cube_raw_action"))
+    parser.add_argument("--output", type=Path, default=Path("local/datasets/pick_cube_chunk_relative"))
     parser.add_argument("--robot-open-width-mm", type=float, default=20.0)
     args = parser.parse_args()
     convert(args.source, args.output, robot_open_width_mm=args.robot_open_width_mm)

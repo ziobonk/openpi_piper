@@ -152,10 +152,10 @@ task     str             →    task               →    prompt_from_task=True 
 
 ```bash
 # 本地模式 (推荐 — 不依赖 HuggingFace)
-python examples/piper/collection/collect_demos.py --data_dir ./piper_data
+python examples/piper/collection/collect_demos.py --data_dir ./local/datasets/piper_data
 
 # 带相机
-python examples/piper/collection/collect_demos.py --data_dir ./piper_data \
+python examples/piper/collection/collect_demos.py --data_dir ./local/datasets/piper_data \
     --rs2_base 128422272318 --rs2_wrist 218722271368
 
 # HF 模式 (需要联网，用于推送到 Hub 或从 Hub 加载)
@@ -172,7 +172,7 @@ python examples/piper/collection/collect_demos.py --repo_id your_hf_username/pip
 **建议：** ≥ 50 个 episode，每个 ≥ 100 帧。数据越多、多样性越高，模型效果越好。
 
 **数据保存位置：**
-- 本地模式：`--data_dir` 指定的目录（如 `./piper_data/`）
+- 本地模式：`--data_dir` 指定的目录（如 `./local/datasets/piper_data/`）
 - HF 模式：`~/.cache/huggingface/lerobot/<repo_id>/`
 
 ---
@@ -184,7 +184,7 @@ python examples/piper/collection/collect_demos.py --repo_id your_hf_username/pip
 **本地数据模式：** 将 `repo_id` 改为数据目录名，训练时设置 `HF_LEROBOT_HOME`:
 
 ```python
-# 如果数据在 /home/user/piper_data/
+# 如果数据在 /home/user/openpi/local/datasets/piper_data/
 TrainConfig(
     name="pi05_piper",
     ...

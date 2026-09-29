@@ -45,8 +45,8 @@ encoded as translation + rotation vector; action[t] is D(t+1).
 
 Usage:
     python examples/piper/data_tools/convert_picodual_to_lerobot.py \
-        --input data/test.zarr \
-        --output ./pick_place \
+        --input local/zarr/test.zarr \
+        --output ./local/datasets/pick_place \
         --controller-to-tcp 0 0 0.15 0 0 0 1 \
         --task "<control mode> end effector <control mode>pick up the red bottle cap and place it into the cup."
 """
@@ -357,8 +357,8 @@ def _process_episode_worker(args: tuple) -> dict:
 # ---------------------------------------------------------------------------
 def main():
     p = argparse.ArgumentParser(description="Convert picodual single-arm zarr to LeRobot v2")
-    p.add_argument("--input", default="data/test.zarr", help="input picodual zarr path")
-    p.add_argument("--output", default="data/piper_picodual_lerobot", help="output LeRobot dir")
+    p.add_argument("--input", default="local/zarr/test.zarr", help="input picodual zarr path")
+    p.add_argument("--output", default="local/datasets/piper_picodual_lerobot", help="output LeRobot dir")
     p.add_argument("--task", default="pick up the black block and place it into the cup.",
                    help="task instruction text")
     p.add_argument("--fps", type=float, default=None,

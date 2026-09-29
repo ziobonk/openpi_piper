@@ -1,10 +1,10 @@
 # Piper EEF：每个动作块首帧为基准
 
-训练数据来自 `pick_cube_raw_action`，其中每帧 `actions` 是 PICO World 下的绝对虚拟 TCP 位姿，且 `state` 与 `actions` 同帧。先生成单独的数据集，再计算新配置的归一化统计：
+训练数据来自 `local/datasets/pick_cube_raw_action`，其中每帧 `actions` 是 PICO World 下的绝对虚拟 TCP 位姿，且 `state` 与 `actions` 同帧。先生成单独的数据集，再计算新配置的归一化统计：
 
 ```bash
 .venv/bin/python examples/piper/chunk_relative/prepare_chunk_relative_eef.py \
-  --source pick_cube_raw_action --output pick_cube_chunk_relative \
+  --source local/datasets/pick_cube_raw_action --output local/datasets/pick_cube_chunk_relative \
   --robot-open-width-mm 20
 .venv/bin/python scripts/compute_norm_stats.py --config-name pi05_piper_eef_chunk_relative
 ```

@@ -9,9 +9,9 @@ Piper LeRobot 数据集可视化工具。
   pick up the pen and place it into the cup
 
 用法:
-    python examples/piper/data_tools/view_dataset.py --data_dir ./piper_data
+    python examples/piper/data_tools/view_dataset.py --data_dir ./local/datasets/piper_data
     python examples/piper/data_tools/view_dataset.py --data_dir data/dual_piper_lerobot --episode 0
-    python examples/piper/data_tools/view_dataset.py --data_dir ./piper_data --gif output.gif
+    python examples/piper/data_tools/view_dataset.py --data_dir ./local/datasets/piper_data --gif local/media/output.gif
 """
 
 import argparse
@@ -508,7 +508,7 @@ def export_gif(df, output_path: str, task: str = "", fps: int = 15, max_frames: 
 
 def main():
     p = argparse.ArgumentParser(description="Piper LeRobot 数据集可视化")
-    p.add_argument("--data_dir", required=True, help="数据集目录 (如 ./piper_data)")
+    p.add_argument("--data_dir", required=True, help="数据集目录 (如 ./local/datasets/piper_data)")
     p.add_argument("--episode", type=int, default=None, help="指定 episode (默认显示第一个)")
     p.add_argument("--gif", default=None, help="导出为 GIF 文件 (如 output.gif)")
     p.add_argument("--info_only", action="store_true", help="仅打印数据集信息，不播放")

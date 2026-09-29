@@ -131,10 +131,10 @@ def export_from_source(args: argparse.Namespace, raw: np.ndarray, ends: np.ndarr
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, default=Path("data/combined_20260924_210134.zarr"))
-    parser.add_argument("--template", type=Path, default=Path("pick_cube"),
+    parser.add_argument("--input", type=Path, default=Path("local/zarr/combined_20260924_210134.zarr"))
+    parser.add_argument("--template", type=Path, default=Path("local/datasets/pick_cube"),
                         help="reuse aligned images if episodes match; otherwise build from source")
-    parser.add_argument("--output", type=Path, default=Path("pick_cube_raw_action"))
+    parser.add_argument("--output", type=Path, default=Path("local/datasets/pick_cube_raw_action"))
     parser.add_argument("--overwrite", action="store_true", help="replace a prior export from this script")
     parser.add_argument("--task", type=str, default=None, help="task prompt for all episodes")
     parser.add_argument("--prompt_only", action="store_true",

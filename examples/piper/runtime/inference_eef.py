@@ -40,7 +40,7 @@ Piper 末端位姿 (EEF) 推理脚本 — 用于 pi05_piper_eef / pi05_piper_eef
 
     # PICO World 下绝对 TCP 位姿数据训练的模型：在机器人端提供数据集用于坐标锚点
     python examples/piper/runtime/inference_eef.py --host localhost --port 6006 \
-        --model_action_frame tcp_absolute --absolute_pose_dataset ./pick_cube_raw_action \
+        --model_action_frame tcp_absolute --absolute_pose_dataset ./local/datasets/pick_cube_raw_action \
         --reference_episode 0 --no-binary_gripper
 
     # 数据集离线评测 (可视化末端位姿，可导出 GIF，不连接真实机械臂)
@@ -1389,7 +1389,7 @@ class PiperEEFDatasetEval:
     用法:
         python examples/piper/runtime/inference_eef.py --dataset ./pick_place --episode 0 --gif eval.gif
         python examples/piper/runtime/inference_eef.py --dataset ./pick_place --init_pose 0.0 -0.7 -0.4 0 0 0
-        python examples/piper/runtime/inference_eef.py --dataset ./pick_cube --episode 0 \
+        python examples/piper/runtime/inference_eef.py --dataset ./local/datasets/pick_cube --episode 0 \
             --legacy_pick_cube_tcp --tcp_start_pose 0.35 0.0 0.25 0.0 1.57 0.0
     """
 

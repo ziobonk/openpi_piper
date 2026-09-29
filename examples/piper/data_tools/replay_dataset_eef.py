@@ -83,7 +83,7 @@ except ImportError:
 # 常量
 # ---------------------------------------------------------------------------
 
-DEFAULT_DATA_DIR = "./pick_place"
+DEFAULT_DATA_DIR = "./local/datasets/pick_place"
 
 # 增量位姿的维度划分 (与 LeRobotPiperEEFDataConfig 的 position_dims/rotation_dims 一致)
 POSITION_DIMS = 3

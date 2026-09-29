@@ -9,9 +9,9 @@
 到 Robot Base 的外参，但两端 TCP 原点和轴方向必须一致。
 
     python examples/piper/data_tools/replay_picodual_lerobot.py \
-        --data_dir ./pick_cube_chunk_relative --episode 0 --dry_run
+        --data_dir ./local/datasets/pick_cube_chunk_relative --episode 0 --dry_run
     python examples/piper/data_tools/replay_picodual_lerobot.py \
-        --data_dir ./pick_cube_chunk_relative --episode 0 --step --speed 0.25
+        --data_dir ./local/datasets/pick_cube_chunk_relative --episode 0 --step --speed 0.25
 
 以下为旧 ``pick_cube`` 数据集的约定。
 
@@ -33,11 +33,11 @@ SE(3) 位姿 ``D_dataset(t)``。若数据集安装关系与当前 ``pico_arm_tra
 
 用法：
     # 先离线检查旧 pick_cube 的转换范围
-    python examples/piper/data_tools/replay_picodual_lerobot.py --data_dir ./pick_cube \
+    python examples/piper/data_tools/replay_picodual_lerobot.py --data_dir ./local/datasets/pick_cube \
         --episode 0 --adapt_dataset_tcp --dry_run
 
     # 上机逐帧确认（默认不控制夹爪）
-    python examples/piper/data_tools/replay_picodual_lerobot.py --data_dir ./pick_cube \
+    python examples/piper/data_tools/replay_picodual_lerobot.py --data_dir ./local/datasets/pick_cube \
         --episode 0 --adapt_dataset_tcp --step --speed 0.25
 """
 
@@ -60,7 +60,7 @@ for import_path in (HERE, PIPER_DIR, REPO_ROOT):
         sys.path.insert(0, str(import_path))
 
 
-DEFAULT_DATA_DIR = "./pick_cube_chunk_relative"
+DEFAULT_DATA_DIR = "./local/datasets/pick_cube_chunk_relative"
 DEFAULT_SPEED_PCT = 30
 DEFAULT_GRIPPER_PORT = "/dev/ttyACM1"
 DEFAULT_GRIPPER_CLOSE_RAD = 10.0

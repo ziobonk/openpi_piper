@@ -1,4 +1,5 @@
 # Data directories.
+/local/
 assets/
 checkpoints/
 data/
