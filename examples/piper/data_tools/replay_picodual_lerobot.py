@@ -137,6 +137,21 @@ def chunk_relative_targets(actions: np.ndarray, start: int, horizon: int, base_t
     return targets
 
 
+def interpolate_action(start: np.ndarray, end: np.ndarray, fraction: float) -> np.ndarray:
+    """Interpolate a TCP command in position, SO(3), and gripper width."""
+    start = np.asarray(start, dtype=np.float64)
+    end = np.asarray(end, dtype=np.float64)
+    if start.shape != (7,) or end.shape != (7,) or not np.isfinite(start).all() or not np.isfinite(end).all():
+        raise ValueError("start/end must be finite 7D TCP actions")
+    if not 0 <= fraction <= 1:
+        raise ValueError("fraction must be in [0, 1]")
+    result = start + fraction * (end - start)
+    first = Rotation.from_rotvec(start[3:6])
+    second = Rotation.from_rotvec(end[3:6])
+    result[3:6] = (first * Rotation.from_rotvec((first.inv() * second).as_rotvec() * fraction)).as_rotvec()
+    return result
+
+
 def _episode_relative_actions(actions: np.ndarray) -> np.ndarray:
     """Absolute dataset poses relative to its first action for validation."""
     relative = actions.copy()
@@ -194,8 +209,12 @@ def replay_chunk_relative(args) -> None:
     robot = _build_gripper_and_robot(args, eef)
     if not robot.enable(speed_pct=args.speed_pct):
         raise RuntimeError("Piper enable failed")
-    period = 1.0 / float(info["fps"]) / args.speed
+    subdivisions = max(1, round(1.0 / args.speed))
+    period = 1.0 / float(info["fps"]) / args.speed / subdivisions
+    print(f"[Replay] {subdivisions} TCP commands per data frame; command interval {period*1000:.1f} ms")
     sent = 0
+    commands = 0
+    last_target = None
     position_errors = []
     rotation_errors = []
     try:
@@ -206,14 +225,28 @@ def replay_chunk_relative(args) -> None:
             robot_base = robot.get_eef_pose().astype(np.float64)
             targets = chunk_relative_targets(actions, start, args.exec_horizon, robot_base)
             _check_workspace(targets, args.workspace)
+            if last_target is not None:
+                tracking = np.linalg.inv(_pose6_to_matrix(last_target[:6])) @ _pose6_to_matrix(robot_base)
+                tracking_mm = np.linalg.norm(tracking[:3, 3]) * 1000
+                tracking_deg = np.rad2deg(Rotation.from_matrix(tracking[:3, :3]).magnitude())
+                print(f"[Chunk {start}] anchor tracking gap: {tracking_mm:.1f} mm, {tracking_deg:.2f} deg")
             print(f"[Chunk {start}] robot base={robot_base.round(4)}; {len(targets)} commands")
+            previous_command = (
+                last_target.copy() if last_target is not None else np.r_[robot_base, actions[start, 6]]
+            )
             for offset, target in enumerate(targets, start=1):
                 frame = start + offset
                 if args.step:
                     input(f"[Step] frame {frame}/{len(actions)-1}, press Enter to send...")
-                robot.execute_action(target)
+                for substep in range(1, subdivisions + 1):
+                    command = interpolate_action(previous_command, target, substep / subdivisions)
+                    _check_workspace(command[None, :], args.workspace)
+                    robot.execute_action(command)
+                    commands += 1
+                    time.sleep(period)
+                previous_command = target
+                last_target = target
                 sent += 1
-                time.sleep(period)
                 if args.readback:
                     actual = robot.get_eef_pose().astype(np.float64)
                     error = np.linalg.inv(_pose6_to_matrix(target[:6])) @ _pose6_to_matrix(actual)
@@ -222,7 +255,7 @@ def replay_chunk_relative(args) -> None:
                 if args.step or frame % 25 == 0 or frame == len(actions)-1:
                     print(f"  frame {frame}: xyz={target[:3].round(4)} "
                           f"rotvec={target[3:6].round(3)} grip={target[6]:.1f}mm")
-        print(f"[Replay] Completed {sent} target frames")
+        print(f"[Replay] Completed {sent} target frames, {commands} TCP commands")
         if position_errors:
             print(f"[Readback] position mean/max={np.mean(position_errors)*1000:.1f}/"
                   f"{np.max(position_errors)*1000:.1f}mm, rotation mean/max="

@@ -88,3 +88,20 @@ def test_async_buffered_absolute_target_uses_captured_base():
     assert sent[1] == 9.0
     chunk = np.vstack([np.r_[np.zeros(6), 11.0], np.r_[local, 9.0]])
     np.testing.assert_array_equal(eef._execution_actions(chunk, "chunk_relative"), chunk[1:])
+
+
+def test_piper_euler_commands_remain_continuous_across_180_degrees():
+    commands = []
+    feedback = SimpleNamespace(RX_axis=179800, RY_axis=55000, RZ_axis=90000)
+    controller = eef.PiperEEFController.__new__(eef.PiperEEFController)
+    controller._piper = SimpleNamespace(
+        GetArmEndPoseMsgs=lambda: SimpleNamespace(end_pose=feedback),
+        EndPoseCtrl=lambda *values: commands.append(values),
+    )
+    controller._last_command_euler_rad = None
+    for rx_deg in (179.9, -179.9, -179.8):
+        rotvec = Rotation.from_euler("xyz", [rx_deg, 55.0, 90.0], degrees=True).as_rotvec()
+        controller.send_eef_command(np.r_[0.4, 0.0, 0.3, rotvec])
+    rx_sent = np.array([row[3] for row in commands]) / 1000
+    np.testing.assert_allclose(rx_sent, [179.9, 180.1, 180.2], atol=0.001)
+    assert np.max(np.abs(np.diff(rx_sent))) < 1.0

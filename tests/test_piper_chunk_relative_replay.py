@@ -99,3 +99,44 @@ def test_episode_loaders_read_only_selected_chunk_relative_episode(tmp_path):
     np.testing.assert_allclose(loaded, actions)
     _, visual_frame, visual_episode, _ = load_episode(str(root), 0)
     assert visual_episode == 0 and len(visual_frame) == 8
+
+
+def test_slow_replay_sends_interpolated_tcp_commands(monkeypatch):
+    from types import SimpleNamespace
+
+    from examples.piper.data_tools import replay_picodual_lerobot as replay
+
+    actions = np.array([
+        [0.40, 0, 0.30, 0, 0, 0, 10],
+        [0.41, 0, 0.30, 0, 0, 0, 10],
+    ], dtype=np.float64)
+    sent = []
+    sleeps = []
+
+    class Robot:
+        def enable(self, *, speed_pct):
+            assert speed_pct == 30
+            return True
+
+        def get_eef_pose(self):
+            return actions[0, :6].copy()
+
+        def execute_action(self, action):
+            sent.append(action.copy())
+
+    monkeypatch.setattr(replay, "load_chunk_relative_episode", lambda *_: (
+        {"fps": 20, "gripper_mapping": {"robot_open_width_mm": 20}}, None, 0, {0: 2}, actions
+    ))
+    monkeypatch.setattr(replay, "_validate_trajectory", lambda *_: None)
+    monkeypatch.setattr(replay, "_build_gripper_and_robot", lambda *_: Robot())
+    monkeypatch.setattr(replay.time, "sleep", sleeps.append)
+    args = SimpleNamespace(
+        data_dir="unused", episode=0, info_only=False, adapt_dataset_tcp=False,
+        action_horizon=50, exec_horizon=20, gripper_open_width_mm=None,
+        control_gripper=False, dry_run=False, speed_pct=30, speed=0.25,
+        yes=True, step=False, readback=False, workspace=None,
+    )
+    replay.replay_chunk_relative(args)
+    assert len(sent) == 4
+    np.testing.assert_allclose([action[0] for action in sent], [0.4025, 0.405, 0.4075, 0.41])
+    np.testing.assert_allclose(sleeps, [0.05] * 4)

@@ -454,6 +454,17 @@ def _resize_pad_rgb(img: np.ndarray, target: int = 224) -> np.ndarray:
 # ===========================================================================
 
 
+def _continuous_euler_xyz(rotvec: np.ndarray, reference: np.ndarray) -> np.ndarray:
+    """Choose an equivalent XYZ Euler command nearest the last command."""
+    euler = Rotation.from_rotvec(rotvec).as_euler("xyz")
+    continuous = euler + 2 * np.pi * np.round((reference - euler) / (2 * np.pi))
+    # Piper feedback rejects angles beyond about 361 degrees. Do not silently
+    # wrap back across a branch cut during a running Cartesian trajectory.
+    if np.any(np.abs(continuous) > 2 * np.pi):
+        raise ValueError("continuous Piper Euler command exceeds 360 degrees; stop and re-home")
+    return continuous
+
+
 class PiperEEFController:
     """封装 Piper SDK 的末端位姿读取 / 控制接口。
 
@@ -478,6 +489,7 @@ class PiperEEFController:
         self._piper.ConnectPort()
         time.sleep(0.1)
         self._enabled = False
+        self._last_command_euler_rad: np.ndarray | None = None
         # gripper: DmGripperController (达妙夹爪) 或 None (回退原生夹爪)
         self._gripper = gripper
         # control_gripper=False 时完全不触碰夹爪 (不下发任何夹爪指令)
@@ -511,6 +523,7 @@ class PiperEEFController:
     def disable(self):
         print("[Piper] 正在去使能...")
         self._piper.DisableArm()
+        self._last_command_euler_rad = None
         if self._control_gripper and self._gripper is not None:
             self._gripper.disable()
         self._enabled = False
@@ -552,6 +565,7 @@ class PiperEEFController:
     def set_end_pose_mode(self, speed_pct: int = DEFAULT_SPEED_PCT):
         """切换到末端位姿控制模式 (0x00)。"""
         self._piper.MotionCtrl_2(0x01, 0x00, max(20, min(100, speed_pct)), 0x00)
+        self._last_command_euler_rad = None
 
     def set_speed(self, speed_pct: int):
         """动态调整速度百分比 (20-100)。"""
@@ -564,7 +578,12 @@ class PiperEEFController:
         """
         R = Rotation.from_rotvec(pose[3:6])
         pos = pose[:3] - R.apply(GRIPPER_TCP_OFFSET_M)
-        euler = R.as_euler("xyz")
+        if self._last_command_euler_rad is None:
+            feedback = self._piper.GetArmEndPoseMsgs().end_pose
+            self._last_command_euler_rad = np.array(
+                [feedback.RX_axis, feedback.RY_axis, feedback.RZ_axis], dtype=np.float64
+            ) * _001DEG_TO_RAD
+        euler = _continuous_euler_xyz(pose[3:6], self._last_command_euler_rad)
         x = int(round(pos[0] * M_TO_001MM))
         y = int(round(pos[1] * M_TO_001MM))
         z = int(round(pos[2] * M_TO_001MM))
@@ -572,6 +591,7 @@ class PiperEEFController:
         ry = int(round(euler[1] * RAD_TO_001DEG))
         rz = int(round(euler[2] * RAD_TO_001DEG))
         self._piper.EndPoseCtrl(x, y, z, rx, ry, rz)
+        self._last_command_euler_rad = euler
 
     def send_gripper_command(self, gripper_mm: float, effort: int = GRIPPER_EFFORT):
         """发送二值夹爪指令：0=全闭，最大值=全开。"""
@@ -597,6 +617,7 @@ class PiperEEFController:
         self._piper.JointCtrl(*raw)
         time.sleep(wait)
         self._piper.MotionCtrl_2(0x01, 0x00, DEFAULT_SPEED_PCT, 0x00)  # 切回 EEF 模式
+        self._last_command_euler_rad = None
         if self._control_gripper:
             if self._gripper is not None:
                 self._gripper.open()  # 达妙夹爪: 0 rad = 全开 (安全默认)
