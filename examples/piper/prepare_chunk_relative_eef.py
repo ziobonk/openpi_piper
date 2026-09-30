@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a gripper-only-state dataset from raw absolute PICO World TCP data.
+"""Create a gripper-only-state dataset from absolute PICO or Piper TCP data.
 
 The stored actions remain absolute PICO World TCP poses. At training time,
 ChunkRelativeEEFActions converts each sampled action window using its own first
@@ -36,7 +36,7 @@ def _fixed_list(values: np.ndarray) -> pa.FixedSizeListArray:
     return pa.FixedSizeListArray.from_arrays(pa.array(values.reshape(-1), type=pa.float32()), values.shape[1])
 
 
-def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0) -> None:
+def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0, source_kind: str = "pico") -> None:
     source = source.resolve()
     output = output.resolve()
     if output.exists():
@@ -44,15 +44,25 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0) ->
     if not np.isfinite(robot_open_width_mm) or robot_open_width_mm <= 0:
         raise ValueError("robot_open_width_mm must be positive and finite")
     info = json.loads((source / "meta/info.json").read_text())
-    if info.get("pose_coordinate_frame") != "pico_world_tcp" or info.get("coordinate_transform_applied") is not False:
-        raise ValueError("source must contain untransformed PICO World absolute TCP poses")
+    if source_kind == "pico":
+        if (
+            info.get("pose_coordinate_frame") != "pico_world_tcp"
+            or info.get("coordinate_transform_applied") is not False
+        ):
+            raise ValueError("source must contain untransformed PICO World absolute TCP poses")
+    elif source_kind == "udp":
+        if info.get("robot_type") != "piper_eef" or info.get("pose_coordinate_frame") != "piper_base_tcp":
+            raise ValueError("UDP source must be a piper_eef dataset from collect_eef_udp.py")
+    else:
+        raise ValueError("source_kind must be pico or udp")
     if info["features"]["state"]["shape"] != [7] or info["features"]["actions"]["shape"] != [7]:
         raise ValueError("source state/actions must both be 7D")
     source_stats = json.loads((source / "meta/stats.json").read_text())
-    grip_min = float(source_stats["state"]["min"][6])
-    grip_max = float(source_stats["state"]["max"][6])
-    if not np.isfinite([grip_min, grip_max]).all() or grip_max <= grip_min:
-        raise ValueError("source gripper range is invalid")
+    if source_kind == "pico":
+        grip_min = float(source_stats["state"]["min"][6])
+        grip_max = float(source_stats["state"]["max"][6])
+        if not np.isfinite([grip_min, grip_max]).all() or grip_max <= grip_min:
+            raise ValueError("source gripper range is invalid")
     parquet_files = sorted((source / "data").rglob("*.parquet"))
     if not parquet_files:
         raise FileNotFoundError(f"no parquet files under {source / 'data'}")
@@ -76,16 +86,24 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0) ->
                 raise ValueError(f"invalid state/action shapes in {path}")
             if not np.isfinite(states).all() or not np.isfinite(actions).all():
                 raise ValueError(f"nonfinite state/action in {path}")
-            if not np.allclose(states, actions, rtol=0, atol=1e-6):
+            if source_kind == "pico" and not np.allclose(states, actions, rtol=0, atol=1e-6):
                 raise ValueError(f"source must have same-frame state/actions: {path}")
             episode_ids = set(table["episode_index"].to_pylist())
             if len(episode_ids) != 1:
                 raise ValueError(f"expected one episode in {path}")
             episode_id = int(episode_ids.pop())
-            grip_mm = np.clip((states[:, 6] - grip_min) / (grip_max - grip_min), 0, 1) * robot_open_width_mm
-            new_states = grip_mm[:, None].astype(np.float32)
+            if source_kind == "pico":
+                grip_mm = np.clip((states[:, 6] - grip_min) / (grip_max - grip_min), 0, 1) * robot_open_width_mm
+                new_states = grip_mm[:, None].astype(np.float32)
+            else:
+                if np.any(states[:, 6] < 0) or np.any(states[:, 6] > robot_open_width_mm):
+                    raise ValueError(f"UDP state gripper outside 0..{robot_open_width_mm} mm: {path}")
+                if np.any(actions[:, 6] < 0) or np.any(actions[:, 6] > robot_open_width_mm):
+                    raise ValueError(f"UDP action gripper outside 0..{robot_open_width_mm} mm: {path}")
+                new_states = states[:, 6:7].copy()
             new_actions = actions.copy()
-            new_actions[:, 6] = grip_mm
+            if source_kind == "pico":
+                new_actions[:, 6] = grip_mm
             table = table.set_column(table.schema.get_field_index("state"), "state", _fixed_list(new_states))
             table = table.set_column(table.schema.get_field_index("actions"), "actions", _fixed_list(new_actions))
             destination = staging / path.relative_to(source)
@@ -102,22 +120,37 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0) ->
         info["robot_type"] = "piper_chunk_relative_eef"
         info["features"]["state"] = {"dtype": "float32", "shape": [1], "names": ["gripper_width_mm"]}
         info["features"]["actions"]["names"] = [
-            "tcp_x", "tcp_y", "tcp_z", "tcp_rx", "tcp_ry", "tcp_rz", "gripper_width_mm"
+            "tcp_x",
+            "tcp_y",
+            "tcp_z",
+            "tcp_rx",
+            "tcp_ry",
+            "tcp_rz",
+            "gripper_width_mm",
         ]
         info["state_pose_semantics"] = "gripper width only; no EEF pose is provided to the model"
         info["action_pose_semantics"] = (
-            "same-frame absolute TCP pose stored; each sampled chunk is converted to "
+            "absolute TCP target stored; each sampled chunk is converted to "
             "inv(T_actions[0]) @ T_actions[k] during training"
         )
-        info["gripper_mapping"] = {
-            "source_min": grip_min, "source_max": grip_max, "robot_open_width_mm": robot_open_width_mm
-        }
+        info["gripper_mapping"] = (
+            {"source_min": grip_min, "source_max": grip_max, "robot_open_width_mm": robot_open_width_mm}
+            if source_kind == "pico"
+            else {"source_units": "mm", "robot_open_width_mm": robot_open_width_mm}
+        )
+        info["pose_coordinate_frame"] = "pico_world_tcp" if source_kind == "pico" else "piper_base_tcp"
         (staging / "meta/info.json").write_text(json.dumps(info, indent=2) + "\n")
-        (staging / "meta/stats.json").write_text(json.dumps({
-            **source_stats,
-            "state": _stats(np.concatenate(all_states)),
-            "actions": _stats(np.concatenate(all_actions)),
-        }, indent=2) + "\n")
+        (staging / "meta/stats.json").write_text(
+            json.dumps(
+                {
+                    **source_stats,
+                    "state": _stats(np.concatenate(all_states)),
+                    "actions": _stats(np.concatenate(all_actions)),
+                },
+                indent=2,
+            )
+            + "\n"
+        )
         with (staging / "meta/episodes_stats.jsonl").open("w") as stream:
             for episode_id in sorted(episode_stats):
                 stream.write(json.dumps(episode_stats[episode_id]) + "\n")
@@ -133,8 +166,9 @@ def main() -> None:
     parser.add_argument("--source", type=Path, default=Path("pick_cube_raw_action"))
     parser.add_argument("--output", type=Path, default=Path("pick_cube_chunk_relative"))
     parser.add_argument("--robot-open-width-mm", type=float, default=20.0)
+    parser.add_argument("--source-kind", choices=("pico", "udp"), default="pico")
     args = parser.parse_args()
-    convert(args.source, args.output, robot_open_width_mm=args.robot_open_width_mm)
+    convert(args.source, args.output, robot_open_width_mm=args.robot_open_width_mm, source_kind=args.source_kind)
 
 
 if __name__ == "__main__":

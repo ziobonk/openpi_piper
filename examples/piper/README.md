@@ -2,6 +2,8 @@
 
 将 openpi VLA 模型部署到 Piper 机械臂的完整方案：数据采集 → 训练 → 推理。
 
+虚拟 TCP、chunk relative 数据集回放和 UDP 遥操的验证步骤见 [CHUNK_RELATIVE_EEF.md](CHUNK_RELATIVE_EEF.md)。
+
 ## 文件说明
 
 | 文件 | 用途 |

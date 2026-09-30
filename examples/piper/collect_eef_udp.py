@@ -479,6 +479,8 @@ class PickPlaceWriter:
         return {
             "codebase_version": "v2.1",
             "robot_type": "piper_eef",
+            "pose_coordinate_frame": "piper_base_tcp",
+            "action_pose_semantics": "absolute TCP target in Piper base; state is same-tick robot feedback",
             "total_episodes": 0,
             "total_frames": 0,
             "total_tasks": 0,

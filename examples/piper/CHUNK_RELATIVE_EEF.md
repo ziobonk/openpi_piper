@@ -43,3 +43,54 @@ uv run scripts/serve_policy.py --port 6006 policy:checkpoint \
   --dataset pick_cube_chunk_relative --episode 0 --max_frames 100 \
   --model_action_frame chunk_relative --no_show
 ```
+
+## 验证管线：虚拟 TCP → 数据集 → Piper
+
+`prepare_chunk_relative_eef.py` 生成的数据集保留每帧的绝对虚拟 TCP 位姿。训练和回放都以**每个动作块首帧**为局部原点；相邻块重叠一帧，首帧只用于对齐，不下发。回放时每块重新读取 Piper TCP 反馈，计算 `T_robot_chunk @ inv(T_virtual_chunk[0]) @ T_virtual[k]`。因此默认 50 帧动作块下发 49 个目标，并且每个 episode 的第 0 帧只作参考。
+
+先离线检查目标轨迹，无需 CAN、相机或机械臂；`--start-pose` 是模拟的 Piper TCP 位姿，单位依次为米和旋转向量弧度：
+
+```bash
+python examples/piper/replay_chunk_relative_eef.py \
+  --dataset pick_cube_chunk_relative --episode 0 --horizon 50 \
+  --start-pose 0.4 0 0.3 0 0 0 --verbose
+```
+
+实际机械臂回放需显式添加 `--execute`。确认离线轨迹、TCP 工具偏移和安全空间后，以低速运行；默认只下发 TCP 位姿，加入 `--gripper` 才会控制原生 Piper 夹爪：
+
+```bash
+python examples/piper/replay_chunk_relative_eef.py \
+  --dataset pick_cube_chunk_relative --episode 0 --horizon 50 \
+  --execute --can-name can0 --speed-pct 20
+```
+
+回放会在下发每帧前检查位置/旋转的单步变化、相对初始 TCP 的最大行程和夹爪范围；每个新块还检查机器人反馈与上一目标的偏差。超限即停止下发并报错。可用 `--max-step-m`、`--max-step-rad`、`--max-excursion-m`、`--max-excursion-rad` 和 `--max-feedback-error-m` / `--max-feedback-error-rad` 调整阈值。退出时保留机械臂使能状态，操作人员须能随时停止机械臂。
+
+## UDP 遥操 → 数据集 → chunk relative
+
+先只验证 `lightumi.teleop_sender` v1 的 UDP 包，不连接硬件：
+
+```bash
+python examples/piper/collect_eef_udp.py --udp_test --print_udp \
+  --udp_host 0.0.0.0 --udp_port 5005 --arm_index 1
+```
+
+包中 `arms[].pose` 需含 `valid`、`position_m` 和 `quaternion_xyzw`；`arm_index=1` 默认选择右臂。实际遥操采集要指定两个相机，下面的序列号和设备号需换成实际值。启动后按 `e` 开始/暂停遥操，按 `c` 录制，按 `s` 保存，按 `q` 退出。UDP 位姿或相机超时会停止遥操和录制。
+
+```bash
+python examples/piper/collect_eef_udp.py --output piper_udp_eef \
+  --rs2_base <基座相机序列号> --usb_wrist <腕部相机设备号> \
+  --can_name can0 --udp_port 5005 --arm_index 1
+```
+
+UDP 数据集的 `state` 是机械臂当帧反馈，`actions` 是下发目标，两者不能当成相同位姿。转换时显式指定 `--source-kind udp`：保留夹爪毫米单位，保存绝对 Piper Base TCP 动作，并在训练采样后计算每块局部运动。该转换输出也能使用上面的回放命令离线检查。
+
+```bash
+python examples/piper/prepare_chunk_relative_eef.py \
+  --source piper_udp_eef --output piper_udp_chunk_relative \
+  --source-kind udp --robot-open-width-mm 20
+python examples/piper/replay_chunk_relative_eef.py \
+  --dataset piper_udp_chunk_relative --episode 0 --horizon 50
+```
+
+原始 PICO 路径继续使用默认 `--source-kind pico`，其源数据需为未变换的 PICO World 绝对 TCP，且 `state/actions` 同帧相同。两种来源的数据不应混在一个 episode 或同一个数据集里。
