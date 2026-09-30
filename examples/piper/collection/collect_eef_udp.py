@@ -2,7 +2,7 @@
 """单臂 UDP 遥操采集，写入与 pick_place 相同的 LeRobot v2.1 EEF 格式。
 
 UDP 数据格式沿用 demo_dual_udp_teleop.py 的 lightumi.teleop_sender v1。
-默认取右手 arms[index=1]，用 RIGHT_T265_TO_ROBOT 将 T265 相对运动映射到 Piper TCP。数据集中的
+默认取右手 arms[index=1]，将 T265 局部相对运动映射到当前 Piper TCP 局部坐标系。数据集中的
 state 是下发前读取的实际 TCP 位姿，actions 是这一帧下发的绝对 TCP 目标；
 两者均为机械臂基坐标系下的 TCP 位姿；PiperEEFController 已对法兰到爪尖
 的 GRIPPER_TCP_OFFSET_M 做补偿。夹爪宽度单位为 mm，不做 PICO 坐标转换。
@@ -52,8 +52,8 @@ DATASET_FPS = 20.0
 BASE_SHAPE = (720, 1280, 3)
 WRIST_SHAPE = (480, 640, 3)
 STATE_NAMES = ["left_x", "left_y", "left_z", "left_rx", "left_ry", "left_rz", "left_gripper_width"]
-# 与 demo_dual_udp_teleop.py 的右臂映射一致，仅用于遥操增量。
-RIGHT_T265_TO_ROBOT = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=np.float64)
+# 右手 T265 局部轴到 Piper TCP 局部轴；用于遥操相对增量。
+RIGHT_T265_TO_TCP = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=np.float64)
 DEFAULT_TASK = "<control mode> end effector <control mode>pick up the red bottle cap and place it into the cup."
 
 
@@ -227,9 +227,12 @@ def tracker_delta(
     max_rot_step: float,
     rotation_only: bool,
 ) -> tuple[np.ndarray, np.ndarray]:
-    dp = RIGHT_T265_TO_ROBOT @ ((pos - prev_pos) * pos_scale)
-    dr_tracker = (Rotation.from_quat(quat) * Rotation.from_quat(prev_quat).inv()).as_rotvec()
-    dr = RIGHT_T265_TO_ROBOT @ (dr_tracker * rot_scale)
+    # Express the tracker change in its previous local frame, then map axes
+    # into the TCP local frame. World-frame tracker orientation cancels out.
+    tracker_base = Rotation.from_quat(prev_quat)
+    dp = RIGHT_T265_TO_TCP @ (tracker_base.inv().apply(pos - prev_pos) * pos_scale)
+    dr_tracker = (tracker_base.inv() * Rotation.from_quat(quat)).as_rotvec()
+    dr = RIGHT_T265_TO_TCP @ (dr_tracker * rot_scale)
     for delta, limit in ((dp, max_pos_step), (dr, max_rot_step)):
         norm = np.linalg.norm(delta)
         if norm > limit:
@@ -241,8 +244,9 @@ def tracker_delta(
 
 def apply_delta(target: np.ndarray, dp: np.ndarray, dr: np.ndarray) -> np.ndarray:
     pose = target.copy()
-    pose[:3] += dp
-    pose[3:6] = (Rotation.from_rotvec(dr) * Rotation.from_rotvec(pose[3:6])).as_rotvec()
+    tcp_rotation = Rotation.from_rotvec(pose[3:6])
+    pose[:3] += tcp_rotation.apply(dp)
+    pose[3:6] = (tcp_rotation * Rotation.from_rotvec(dr)).as_rotvec()
     return pose
 
 
@@ -910,7 +914,7 @@ def run(args):
             print(f"[Ready] 无 UDP 测试采集，输出 {args.output}；不下发 EEF 移动指令")
         else:
             print(f"[Ready] UDP {args.udp_host}:{args.udp_port}, arm_index={args.arm_index}, 输出 {args.output}")
-        print(f"[Ready] TCP 夹爪偏移 {eef.GRIPPER_TCP_OFFSET_M.tolist()} m；记录机械臂基坐标系位姿")
+        print(f"[Ready] TCP 夹爪偏移 {eef.GRIPPER_TCP_OFFSET_M.tolist()} m；遥操以当前 TCP 局部轴为基准，记录机械臂基坐标系位姿")
         print("按 e 遥操, c 录制, s 后台保存, d 丢弃, r 重置, z 重新对齐, t 只旋转, q 退出")
 
         with TerminalKeys() as keys:

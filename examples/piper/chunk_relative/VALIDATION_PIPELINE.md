@@ -55,7 +55,7 @@
   --udp_test --print_udp --udp_host 0.0.0.0 --udp_port 5005 --arm_index 1
 ```
 
-确认 `valid` 位姿、所选手臂、方向与夹爪角度后，启动采集；下面的相机和串口参数须按设备修改：
+遥操按 `e` 开始或按 `z` 重置时读取当前实测 Piper TCP；随后将 UMI 相邻位姿的局部相对运动映射到当前目标 TCP 的局部轴，并用右乘 SE(3) 增量更新目标。TCP 旋转后，平移方向随 TCP 轴转动。转换后的目标仍以 Piper 基座坐标发送与记录。确认 `valid` 位姿、所选手臂、方向与夹爪角度后，启动采集；下面的相机和串口参数须按设备修改：
 
 ```bash
 .venv/bin/python examples/piper/collection/collect_eef_udp.py \

@@ -377,3 +377,33 @@ def test_no_udp_mode_records_feedback_without_socket_or_eef_commands(monkeypatch
     assert len(frames) == 1
     np.testing.assert_allclose(frames[0][0], frames[0][1])
     assert sent_gripper == [3.0]
+
+
+def test_tracker_motion_is_relative_to_tracker_and_current_tcp_axes():
+    tracker_rot = Rotation.from_euler("xyz", [0.3, -0.4, 0.7])
+    tracker_local_translation = np.array([0.01, 0.0, 0.0])
+    tracker_local_rotation = Rotation.from_rotvec([0.0, 0.0, 0.02])
+    dp, dr = tracker_delta(
+        np.array([1.0, 2.0, 3.0]),
+        tracker_rot.as_quat(),
+        np.array([1.0, 2.0, 3.0]) + tracker_rot.apply(tracker_local_translation),
+        (tracker_rot * tracker_local_rotation).as_quat(),
+        pos_scale=1.0,
+        rot_scale=1.0,
+        max_pos_step=0.1,
+        max_rot_step=0.1,
+        rotation_only=False,
+    )
+    np.testing.assert_allclose(dp, collector.RIGHT_T265_TO_TCP @ tracker_local_translation, atol=1e-12)
+    np.testing.assert_allclose(dr, collector.RIGHT_T265_TO_TCP @ [0.0, 0.0, 0.02], atol=1e-12)
+
+    tcp = np.r_[np.array([0.4, -0.1, 0.3]), Rotation.from_euler("z", 90, degrees=True).as_rotvec()]
+    result = apply_delta(tcp, dp, dr)
+    tcp_rot = Rotation.from_rotvec(tcp[3:6])
+    np.testing.assert_allclose(result[:3], tcp[:3] + tcp_rot.apply(dp), atol=1e-12)
+    np.testing.assert_allclose(
+        Rotation.from_rotvec(result[3:6]).as_matrix(),
+        (tcp_rot * Rotation.from_rotvec(dr)).as_matrix(),
+        atol=1e-12,
+    )
+    assert not np.allclose(result[:3] - tcp[:3], dp)
