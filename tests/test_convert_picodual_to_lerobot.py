@@ -93,3 +93,19 @@ def test_episode_pose_rejects_tracking_origin_jump():
     )
     with pytest.raises(ValueError, match="tracking-origin jump"):
         prepare_episode_pose_data(raw, np.eye(4), max_translation_step_m=0.2)
+
+
+def test_raw_tcp_action_is_same_frame_and_keeps_world_pose():
+    from examples.piper.data_tools.convert_picodual_to_lerobot import prepare_raw_tcp_episode
+
+    raw = np.array([
+        [np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan],
+        [1.0, 2.0, 3.0, 0.0, 0.0, 0.2, 12.0],
+        [1.1, 2.0, 3.0, 0.0, 0.0, 0.3, 13.0],
+    ], dtype=np.float32)
+    state, world_tcp = prepare_raw_tcp_episode(raw)
+    np.testing.assert_allclose(state[0, :6], state[1, :6])
+    np.testing.assert_allclose(state[:, 6], [0, 12, 13])
+    np.testing.assert_allclose(state[2, :6], raw[2, :6])
+    np.testing.assert_allclose(world_tcp[2, :3, 3], raw[2, :3])
+    assert not np.allclose(state[0, :6], 0)

@@ -8,6 +8,7 @@ This is NOT the diffusion_policy_piper replay-buffer format that
 picodual dump stores:
 
     data/action                 (N, 7) float32  [x, y, z, rx, ry, rz, gripper_width]
+    data/tcp_action             (N, 7) float32  same-frame absolute PICO World TCP
     data/action_valid           (N,)   bool
     data/global_camera_img      (N, H, W, 3) uint8   one JPEG frame per chunk
     data/left_img               (N, H, W, 3) uint8   one JPEG frame per chunk
@@ -26,11 +27,12 @@ Output LeRobot v2 layout (single arm, EEF space):
     image               global_camera_img  (base camera)
     wrist_image         left_img           (left wrist camera)
 
-The ``action_valid`` flag is ignored. Missing pose values in ``data/action``
+The ``action_valid`` flag is ignored. In legacy mode, missing poses in ``data/action``
 are filled within each episode from the most recent finite pose; leading
 missing poses use the first finite pose. Gripper width is kept for every frame.
 The final frame's action holds its current pose so output frame counts match
-the source exactly.
+the source exactly. With ``--raw-tcp-action``, read ``data/tcp_action``
+instead and keep state/action at the same frame without a mount or frame transform.
 
 The input pose is ``^W T_C``: the PICO controller pose in PICO World, with
 position in meters and rotation represented as a rotation vector in radians.
@@ -78,6 +80,7 @@ STATE_NAMES = [
     "left_gripper_width",
 ]
 MATRIX_NAMES = [f"m{row}{column}" for row in range(4) for column in range(4)]
+RAW_TCP_NAMES = ["tcp_x", "tcp_y", "tcp_z", "tcp_rx", "tcp_ry", "tcp_rz", "gripper_width"]
 
 
 @dataclass(frozen=True)
@@ -199,6 +202,29 @@ def prepare_episode_pose_data(
     )
 
 
+def prepare_raw_tcp_episode(actions: np.ndarray, *, max_translation_step_m: float | None = None,
+                            max_rotation_step_rad: float | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """Return same-frame absolute TCP state/actions from data/tcp_action."""
+    raw = np.asarray(actions, dtype=np.float64).copy()
+    if raw.ndim != 2 or raw.shape[1] != STATE_DIM or len(raw) == 0:
+        raise ValueError("raw TCP action must be a nonempty (N, 7) array")
+    raw[np.isnan(raw[:, 6]), 6] = 0.0
+    filled = _fill_episode_controller_poses(raw)
+    world_tcp = _poses_to_matrices(filled)
+    for frame in range(1, len(world_tcp)):
+        step = relative_transform(world_tcp[frame - 1], world_tcp[frame])
+        translation = float(np.linalg.norm(step[:3, 3]))
+        rotation = float(Rotation.from_matrix(step[:3, :3]).magnitude())
+        if (max_translation_step_m is not None and translation > max_translation_step_m) or (
+            max_rotation_step_rad is not None and rotation > max_rotation_step_rad
+        ):
+            raise ValueError(
+                f"possible PICO tracking-origin jump at episode frame {frame}: "
+                f"translation={translation:.3f} m, rotation={np.rad2deg(rotation):.1f} deg"
+            )
+    return filled.astype(np.float32), world_tcp
+
+
 def prepare_episode_actions(
     actions: np.ndarray, controller_to_tcp: np.ndarray | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -226,6 +252,7 @@ def _process_episode_worker(args: tuple) -> dict:
         controller_to_tcp,
         max_translation_step_m,
         max_rotation_step_rad,
+        raw_tcp_action,
     ) = args
 
     import datasets
@@ -235,15 +262,24 @@ def _process_episode_worker(args: tuple) -> dict:
     from datasets import Value
     import pandas as pd
 
-    pose_data = prepare_episode_pose_data(
-        raw_actions,
-        controller_to_tcp,
-        max_translation_step_m=max_translation_step_m,
-        max_rotation_step_rad=max_rotation_step_rad,
-    )
-    ep_state, ep_actions = pose_data.state, pose_data.action
-    # 时序平移: state[t] = pose[t], action[t] = pose[t+1] (绝对目标)。
-    # 最后一帧的 action=state；训练时 DeltaEEFPoseActions 将其转成零增量。
+    if raw_tcp_action:
+        ep_state, world_tcp = prepare_raw_tcp_episode(
+            raw_actions,
+            max_translation_step_m=max_translation_step_m,
+            max_rotation_step_rad=max_rotation_step_rad,
+        )
+        ep_actions = ep_state.copy()  # Same-frame action; no temporal shift.
+        pose_data = None
+    else:
+        pose_data = prepare_episode_pose_data(
+            raw_actions,
+            controller_to_tcp,
+            max_translation_step_m=max_translation_step_m,
+            max_rotation_step_rad=max_rotation_step_rad,
+        )
+        ep_state, ep_actions = pose_data.state, pose_data.action
+        world_tcp = pose_data.world_tcp
+        # Legacy next-frame action; final action holds its current pose.
     n = len(ep_state)
     ep_ts = (np.arange(n, dtype=np.float32) / fps)
 
@@ -255,12 +291,10 @@ def _process_episode_worker(args: tuple) -> dict:
     img_l_raw = [read_jpeg_frame(img_dir_left, i, chunks_l) for i in range(ep_start, ep_end)]
 
     def encode_row(pos: int) -> dict:
-        return {
+        row = {
             "state": ep_state[pos],
             "actions": ep_actions[pos],
-            "pico_world_controller": pose_data.world_controller[pos].reshape(-1).astype(np.float32),
-            "pico_world_tcp": pose_data.world_tcp[pos].reshape(-1).astype(np.float32),
-            "episode_relative_tcp": pose_data.episode_relative_tcp[pos].reshape(-1).astype(np.float32),
+            "pico_world_tcp": world_tcp[pos].reshape(-1).astype(np.float32),
             "timestamp": ep_ts[pos],
             "frame_index": pos,
             "episode_index": ep_idx,
@@ -269,6 +303,10 @@ def _process_episode_worker(args: tuple) -> dict:
             "image": {"bytes": img_g_raw[pos], "path": f"frame_{pos:06d}.jpg"},
             "wrist_image": {"bytes": img_l_raw[pos], "path": f"frame_{pos:06d}.jpg"},
         }
+        if pose_data is not None:
+            row["pico_world_controller"] = pose_data.world_controller[pos].reshape(-1).astype(np.float32)
+            row["episode_relative_tcp"] = pose_data.episode_relative_tcp[pos].reshape(-1).astype(np.float32)
+        return row
 
     frames = [encode_row(pos) for pos in range(n)]
 
@@ -280,9 +318,7 @@ def _process_episode_worker(args: tuple) -> dict:
     hf_features = Features({
         "state": Sequence(length=STATE_DIM, feature=Value(dtype="float32")),
         "actions": Sequence(length=STATE_DIM, feature=Value(dtype="float32")),
-        "pico_world_controller": Sequence(length=16, feature=Value(dtype="float32")),
         "pico_world_tcp": Sequence(length=16, feature=Value(dtype="float32")),
-        "episode_relative_tcp": Sequence(length=16, feature=Value(dtype="float32")),
         "timestamp": Value(dtype="float32"),
         "frame_index": Value(dtype="int64"),
         "episode_index": Value(dtype="int64"),
@@ -291,6 +327,9 @@ def _process_episode_worker(args: tuple) -> dict:
         "image": HFImage(),
         "wrist_image": HFImage(),
     })
+    if pose_data is not None:
+        hf_features["pico_world_controller"] = Sequence(length=16, feature=Value(dtype="float32"))
+        hf_features["episode_relative_tcp"] = Sequence(length=16, feature=Value(dtype="float32"))
     hf_ds = datasets.Dataset.from_pandas(df, features=hf_features)
     hf_ds.to_parquet(str(parquet_path))
     print(f"  -> Episode {ep_idx}: {n} frames -> {parquet_path.name}")
@@ -372,6 +411,11 @@ def main():
         help="^C T_E as translation(m) plus xyzw quaternion; applied on the right",
     )
     mount.add_argument(
+        "--raw-tcp-action",
+        action="store_true",
+        help="read same-frame absolute PICO World TCP from data/tcp_action; no mount or time shift",
+    )
+    mount.add_argument(
         "--controller-is-tcp",
         action="store_true",
         help="use identity ^C T_E only when raw poses already describe the virtual TCP",
@@ -390,7 +434,7 @@ def main():
     )
     args = p.parse_args()
 
-    controller_to_tcp = (
+    controller_to_tcp = None if args.raw_tcp_action else (
         np.eye(4, dtype=np.float64)
         if args.controller_is_tcp
         else pose_to_matrix(
@@ -420,9 +464,17 @@ def main():
     ep_ends = read_numeric_array(zarr_path / "meta" / "episode_ends").astype(np.int64)
     n_episodes = len(ep_ends)
     total_frames = int(ep_ends[-1])
-    all_actions = read_numeric_array(zarr_path / "data" / "action")
-    if len(all_actions) != total_frames:
-        raise ValueError(f"action has {len(all_actions)} frames, episode_ends ends at {total_frames}")
+    action_key = "tcp_action" if args.raw_tcp_action else "action"
+    all_actions = read_numeric_array(zarr_path / "data" / action_key)
+    if all_actions.shape != (total_frames, STATE_DIM):
+        raise ValueError(f"{action_key} shape {all_actions.shape} != ({total_frames}, {STATE_DIM})")
+    episode_lengths = np.diff(np.r_[0, ep_ends])
+    if np.any(episode_lengths < 2):
+        print(f"[WARN] {np.count_nonzero(episode_lengths < 2)}/{n_episodes} episodes have fewer than 2 frames; "
+              "they contain no future TCP action for chunk-relative training")
+    finite_gripper = all_actions[np.isfinite(all_actions[:, 6]), 6]
+    if len(finite_gripper) and np.ptp(finite_gripper) == 0:
+        print("[WARN] source gripper width is constant; gripper-range calibration cannot be learned")
 
     # Image shapes straight from meta/.zattrs (zarr can't open the jpeg arrays)
     img_shapes = meta.get("image_shapes", {})
@@ -436,8 +488,11 @@ def main():
     print(f"[INFO] fps:    {fps}")
     print(f"[INFO] episodes: {n_episodes}, total frames: {total_frames}")
     print(f"[INFO] global_camera: {g_h}x{g_w}, left: {l_h}x{l_w}")
-    print("[INFO] pose frame: PICO World -> virtual TCP -> episode-initial TCP")
-    print(f"[INFO] ^C T_E:\n{controller_to_tcp}")
+    if args.raw_tcp_action:
+        print("[INFO] pose frame: untransformed PICO World TCP; same-frame state/action")
+    else:
+        print("[INFO] pose frame: PICO World -> virtual TCP -> episode-initial TCP")
+        print(f"[INFO] ^C T_E:\n{controller_to_tcp}")
     print("[INFO] keeping all source frames; filling missing poses within each episode")
 
     out = Path(args.output)
@@ -467,6 +522,7 @@ def main():
                 controller_to_tcp,
                 max_translation_step_m,
                 max_rotation_step_rad,
+                args.raw_tcp_action,
             )
         )
         ep_start = ep_end
@@ -487,12 +543,20 @@ def main():
     info = {
         "codebase_version": "v2.1",
         "robot_type": "piper_picodual_eef",
-        "pose_coordinate_frame": "episode_initial_virtual_tcp",
+        "pose_coordinate_frame": "pico_world_tcp" if args.raw_tcp_action else "episode_initial_virtual_tcp",
         "pose_convention": "column_vectors; ^A_T_C = ^A_T_B @ ^B_T_C",
         "quaternion_order": "xyzw",
-        "controller_to_tcp": controller_to_tcp.tolist(),
-        "state_pose_semantics": "inv(^W_T_E(0)) @ ^W_T_E(t)",
-        "action_pose_semantics": "next episode-relative TCP pose; training computes inv(state) @ future",
+        "controller_to_tcp": None if args.raw_tcp_action else controller_to_tcp.tolist(),
+        "source_action_key": f"data/{action_key}",
+        "coordinate_transform_applied": not args.raw_tcp_action,
+        "state_pose_semantics": (
+            "data/tcp_action at the same frame; missing poses held within each episode"
+            if args.raw_tcp_action else "inv(^W_T_E(0)) @ ^W_T_E(t)"
+        ),
+        "action_pose_semantics": (
+            "data/tcp_action at the same frame; no temporal shift; missing poses held within each episode"
+            if args.raw_tcp_action else "next episode-relative TCP pose; training computes inv(state) @ future"
+        ),
         "total_episodes": n_episodes,
         "total_frames": sum(e["length"] for e in episode_info),
         "total_tasks": 1,
@@ -504,11 +568,9 @@ def main():
         "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
         "video_path": None,
         "features": {
-            "state": {"dtype": "float32", "shape": [STATE_DIM], "names": STATE_NAMES},
-            "actions": {"dtype": "float32", "shape": [STATE_DIM], "names": STATE_NAMES},
-            "pico_world_controller": {"dtype": "float32", "shape": [16], "names": MATRIX_NAMES},
+            "state": {"dtype": "float32", "shape": [STATE_DIM], "names": RAW_TCP_NAMES if args.raw_tcp_action else STATE_NAMES},
+            "actions": {"dtype": "float32", "shape": [STATE_DIM], "names": RAW_TCP_NAMES if args.raw_tcp_action else STATE_NAMES},
             "pico_world_tcp": {"dtype": "float32", "shape": [16], "names": MATRIX_NAMES},
-            "episode_relative_tcp": {"dtype": "float32", "shape": [16], "names": MATRIX_NAMES},
             "timestamp": {"dtype": "float32", "shape": [1], "names": None},
             "frame_index": {"dtype": "int64", "shape": [1], "names": None},
             "episode_index": {"dtype": "int64", "shape": [1], "names": None},
@@ -518,6 +580,9 @@ def main():
             "wrist_image": {"dtype": "image", "shape": [l_h, l_w, 3], "names": ["height", "width", "channel"]},
         },
     }
+    if not args.raw_tcp_action:
+        info["features"]["pico_world_controller"] = {"dtype": "float32", "shape": [16], "names": MATRIX_NAMES}
+        info["features"]["episode_relative_tcp"] = {"dtype": "float32", "shape": [16], "names": MATRIX_NAMES}
     (out / "meta" / "info.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
 
     with open(out / "meta" / "episodes.jsonl", "w", encoding="utf-8") as f:
