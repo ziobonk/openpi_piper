@@ -90,8 +90,8 @@ def load_chunk_relative_episode(data_dir: str, episode: int | None):
     info = json.loads((root / "meta/info.json").read_text())
     if info.get("robot_type") != "piper_chunk_relative_eef":
         raise ValueError("expected a piper_chunk_relative_eef dataset")
-    if info.get("pose_coordinate_frame") != "pico_world_tcp" or info.get("coordinate_transform_applied") is not False:
-        raise ValueError("expected untransformed absolute PICO World TCP actions")
+    if info.get("pose_coordinate_frame") not in ("pico_world_tcp", "robot_base_tcp") or info.get("coordinate_transform_applied") is not False:
+        raise ValueError("expected untransformed absolute TCP actions in a supported frame")
     episodes = [json.loads(line) for line in (root / "meta/episodes.jsonl").read_text().splitlines() if line]
     lengths = {int(row["episode_index"]): int(row["length"]) for row in episodes}
     if not lengths:

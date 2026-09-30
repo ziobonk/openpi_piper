@@ -482,6 +482,10 @@ class PickPlaceWriter:
         return {
             "codebase_version": "v2.1",
             "robot_type": "piper_eef",
+            "pose_coordinate_frame": "robot_base_tcp",
+            "coordinate_transform_applied": False,
+            "state_pose_semantics": "measured TCP and gripper at observation time",
+            "action_pose_semantics": "commanded TCP and gripper after observation",
             "total_episodes": 0,
             "total_frames": 0,
             "total_tasks": 0,
