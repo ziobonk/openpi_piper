@@ -66,9 +66,19 @@ class Policy(BasePolicy):
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
-        # Make a copy since transformations may modify the inputs in place.
-        inputs = jax.tree.map(lambda x: x, obs)
-        inputs = self._input_transform(inputs)
+        # RTC carries a previous executable chunk. Convert it with the same
+        # action, normalization and padding transforms used during training.
+        rtc_keys = {"prev_action_chunk", "inference_delay", "execute_horizon", "enable_rtc"}
+        rtc_requested = bool(rtc_keys.intersection(obs))
+        if rtc_requested and not self._metadata.get("rtc_supported", False):
+            raise ValueError("RTC request requires an RTC policy configuration")
+        if rtc_requested and self._is_pytorch_model:
+            raise ValueError("RTC sampling is currently supported only for JAX checkpoints")
+        ordinary_obs = {key: value for key, value in obs.items() if key not in rtc_keys}
+        rtc_inputs = None
+        if "prev_action_chunk" in obs:
+            rtc_inputs = self._input_transform({**ordinary_obs, "actions": obs["prev_action_chunk"]})
+        inputs = self._input_transform(ordinary_obs)
         if not self._is_pytorch_model:
             # Make a batch and convert to jax.Array.
             inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
@@ -80,6 +90,13 @@ class Policy(BasePolicy):
 
         # Prepare kwargs for sample_actions
         sample_kwargs = dict(self._sample_kwargs)
+        if rtc_requested:
+            if rtc_inputs is not None:
+                sample_kwargs["prev_action_chunk"] = jnp.asarray(rtc_inputs["actions"])[None, ...]
+            for key in ("inference_delay", "execute_horizon", "enable_rtc"):
+                if key in obs:
+                    sample_kwargs[key] = obs[key]
+            sample_kwargs["rtc_action_dim"] = self._metadata["rtc_action_dim"]
         if noise is not None:
             noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
 

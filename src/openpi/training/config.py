@@ -1775,8 +1775,22 @@ _CONFIGS = [
     *polaris_config.get_polaris_configs(),
 ]
 
+# Deployment-only RTC variant: Pi0RTC has the same parameter tree as Pi0.
+_PIPER_CHUNK_RTC_BASE = next(config for config in _CONFIGS if config.name == "pi05_piper_pick_cube_0928_chunk_relative")
+_CONFIGS.append(
+    dataclasses.replace(
+        _PIPER_CHUNK_RTC_BASE,
+        name="pi05_piper_pick_cube_0928_chunk_relative_rtc",
+        model=pi0_config.Pi0RTCConfig(
+            pi05=True, action_dim=32, action_horizon=50, discrete_state_input=False
+        ),
+        policy_metadata={"rtc_supported": True, "rtc_action_dim": 7, "action_reference": "first_action_in_chunk"},
+    )
+)
+
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
     raise ValueError("Config names must be unique.")
+
 _CONFIGS_DICT = {config.name: config for config in _CONFIGS}
 
 

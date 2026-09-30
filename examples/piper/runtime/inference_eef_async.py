@@ -27,6 +27,7 @@ from typing import Optional
 
 import cv2
 from examples.piper.runtime import inference_eef as eef
+from examples.piper.runtime.temporal_buffers import NaiveActionBuffer, TemporalEnsemblingActionBuffer
 import numpy as np
 from scipy.spatial.transform import Rotation
 
@@ -75,9 +76,9 @@ class EEFActionBuffer:
             raise ValueError(f"策略动作必须是有限的 (H, 7) 数组，收到 {chunk.shape}")
         with self._lock:
             elapsed = max(0, self._executed - observed_step)
-            drop_n = min(elapsed, max(0, max_latency_steps))
-            if drop_n >= len(chunk):
-                return drop_n, len(self._actions)
+            if elapsed > max_latency_steps or elapsed >= len(chunk):
+                return elapsed, len(self._actions)
+            drop_n = elapsed
             new = [a.copy() for a in chunk[drop_n:]]
 
             old = [a.copy() for a in self._actions]
@@ -111,6 +112,7 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
         inference_rate: float = 3.0,
         latency_k: int = 8,
         min_smooth_steps: int = 8,
+        mode: str = "temporal_smoothing",
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -118,10 +120,22 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
             raise ValueError("--inference_rate 必须大于 0")
         if latency_k < 0 or min_smooth_steps < 1:
             raise ValueError("--latency_k 必须非负，--min_smooth_steps 必须大于 0")
+        if mode not in {"async", "temporal_smoothing", "temporal_ensembling", "rtc"}:
+            raise ValueError(f"未知异步推理模式: {mode}")
+        if mode == "rtc" and self._model_action_frame != "chunk_relative":
+            raise ValueError("RTC 模式需要 chunk_relative 动作坐标系")
+        self._mode = mode
         self._inference_rate = inference_rate
         self._latency_k = latency_k
         self._min_smooth_steps = min_smooth_steps
-        self._buffer = EEFActionBuffer()
+        self._buffer = (
+            TemporalEnsemblingActionBuffer() if mode == "temporal_ensembling"
+            else EEFActionBuffer() if mode == "temporal_smoothing"
+            else NaiveActionBuffer()
+        )
+        self._rtc_previous: np.ndarray | None = None
+        self._rtc_previous_step = 0
+        self._rtc_delays: deque[float] = deque(maxlen=10)
         self._state_lock = threading.Lock()
         self._robot_lock = threading.Lock()
         self._shutdown = threading.Event()
@@ -134,6 +148,7 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
     def run(self):
         print("=" * 60)
         print("Piper EEF 异步推理客户端")
+        print(f"模式:           {self._mode}")
         print(f"服务器:         {self._policy_host}:{self._policy_port}")
         print(f"模型动作坐标系: {self._model_action_frame.upper()}")
         print(f"控制频率:       {eef.CONTROL_FREQ} Hz")
@@ -169,6 +184,7 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
                 self._inferring = False
                 self._generation += 1
                 self._buffer.clear()
+                self._clear_rtc_history()
             self._shutdown.set()
             self._wake_inference.set()
             if worker is not None:
@@ -179,6 +195,39 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
             finally:
                 cv2.destroyAllWindows()
                 print("[INFO] 已退出 (机械臂和夹爪保持使能)")
+
+    def _connect_policy(self):
+        super()._connect_policy()
+        if self._mode == "rtc":
+            meta = self._policy_client.get_server_metadata()
+            if not (meta.get("rtc_supported") and meta.get("rtc_action_dim") == 7):
+                raise RuntimeError("RTC 需要使用 pi05_piper_pick_cube_0928_chunk_relative_rtc 启动策略服务")
+
+    def _clear_rtc_history(self):
+        if getattr(self, "_mode", None) == "rtc":
+            self._rtc_previous = None
+            self._rtc_previous_step = 0
+            self._rtc_delays.clear()
+
+    def _rtc_request(self, observation: dict, observed_step: int) -> dict:
+        """Align the previous full chunk with the current observation tick."""
+        request = dict(observation)
+        request["enable_rtc"] = True
+        request["execute_horizon"] = min(self._action_horizon, self._exec_horizon + 1)
+        if self._rtc_previous is not None:
+            shift = min(max(0, observed_step - self._rtc_previous_step), len(self._rtc_previous) - 1)
+            previous = self._rtc_previous[shift:]
+            if shift:
+                previous = np.concatenate(
+                    [previous, np.repeat(previous[-1:], shift, axis=0)], axis=0
+                )
+            request["prev_action_chunk"] = previous.copy()
+            if self._rtc_delays:
+                request["inference_delay"] = min(
+                    self._action_horizon - 1,
+                    max(0, round(float(np.median(self._rtc_delays)) * eef.CONTROL_FREQ)),
+                )
+        return request
 
     def _inference_loop(self):
         period = 1.0 / self._inference_rate
@@ -203,19 +252,26 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
                     chunk_tcp_base = (
                         self._chunk_tcp_base.copy() if self._model_action_frame == "chunk_relative" else None
                     )
+                    if getattr(self, "_mode", "temporal_smoothing") == "rtc":
+                        observation = self._rtc_request(observation, observed_step)
                 with self._state_lock:
                     if not self._inferring or generation != self._generation:
                         continue
                 observed_at = time.monotonic()
                 result = self._policy_client.infer(observation)
-                actions = np.asarray(result["actions"], dtype=np.float64)
-                actions = eef._execution_actions(actions, self._model_action_frame)
-                actions = actions[: min(self._action_horizon, self._exec_horizon)]
+                infer_seconds = time.monotonic() - observed_at
+                full_chunk = np.asarray(result["actions"], dtype=np.float64)
+                if full_chunk.ndim != 2 or full_chunk.shape[1] < 7 or not np.isfinite(full_chunk).all():
+                    raise ValueError(f"无效的策略动作块: {full_chunk.shape}")
+                full_chunk = full_chunk[:self._action_horizon, :7].copy()
+                if getattr(self, "_mode", "temporal_smoothing") == "rtc" and len(full_chunk) != self._action_horizon:
+                    raise ValueError(f"RTC 需要完整的 {self._action_horizon} 步动作块")
                 if chunk_tcp_base is not None:
-                    # Buffer entries must share Robot Base coordinates before blending chunks.
-                    actions = actions.copy()
-                    for action in actions:
+                    # Fusion and RTC history both use Robot Base TCP coordinates.
+                    for action in full_chunk:
                         action[:6] = eef._compose_pose6(chunk_tcp_base, action[:6])
+                actions = eef._execution_actions(full_chunk, self._model_action_frame)
+                actions = actions[:self._exec_horizon]
                 with self._state_lock:
                     if self._inferring and generation == self._generation:
                         dropped, buffered = self._buffer.integrate_new_chunk(
@@ -224,6 +280,14 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
                             self._latency_k,
                             self._min_smooth_steps,
                         )
+                        if (
+                            getattr(self, "_mode", "temporal_smoothing") == "rtc"
+                            and dropped <= self._latency_k
+                            and dropped < len(actions)
+                        ):
+                            self._rtc_previous = full_chunk
+                            self._rtc_previous_step = observed_step
+                            self._rtc_delays.append(infer_seconds)
                     else:
                         continue  # 暂停/重置后丢弃旧请求的结果
                 print(
@@ -266,6 +330,7 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
                     self._robot_tcp0 = robot_tcp0
                     self._generation += 1
                     self._buffer.clear()
+                    self._clear_rtc_history()
                     self._inferring = True
                     self._wake_inference.set()
                     print("[Control] 开始推理...")
@@ -275,6 +340,7 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
                 self._inferring = False
                 self._generation += 1
                 self._buffer.clear()
+                self._clear_rtc_history()
             if cmd == "stop":
                 print("[Control] 暂停推理")
             elif cmd == "quit":
@@ -430,12 +496,13 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
         }
 
 
-def main():
+def main(args=None, *, mode: str = "temporal_smoothing"):
     parser = argparse.ArgumentParser(description="Piper EEF 异步策略服务器推理客户端")
     parser.add_argument("--inference_rate", type=float, default=3.0, help="推理频率上限 Hz (默认: 3)")
     parser.add_argument("--latency_k", type=int, default=8, help="新动作块最多跳过的过期步数 (默认: 8)")
     parser.add_argument("--min_smooth_steps", type=int, default=8, help="新旧动作块的最少平滑步数 (默认: 8)")
-    args = eef._parse_args(parser)
+    if args is None:
+        args = eef._parse_args(parser)
     if args.dataset:
         eef.main(args)
         return
@@ -467,6 +534,7 @@ def main():
         else (args.cam_ids[1] if len(args.cam_ids) > 1 else None),
         wrist_exposure=args.wrist_exposure,
         action_horizon=args.action_horizon,
+        exec_horizon=args.exec_horizon,
         max_pos_speed=args.max_pos_speed,
         max_rot_speed=args.max_rot_speed,
         interp_freq=args.interp_freq if args.interp_freq and args.interp_freq > 0 else None,
@@ -498,6 +566,7 @@ def main():
         inference_rate=args.inference_rate,
         latency_k=args.latency_k,
         min_smooth_steps=args.min_smooth_steps,
+        mode=mode,
     )
     inference.run()
 

@@ -13,6 +13,7 @@ import openpi.shared.nnx_utils as nnx_utils
 
 if TYPE_CHECKING:
     from openpi.models.pi0 import Pi0
+    from openpi.models.pi0_rtc import Pi0RTC
 
 
 @dataclasses.dataclass(frozen=True)
@@ -115,3 +116,14 @@ class Pi0Config(_model.BaseModelConfig):
         if not filters:
             return nnx.Nothing
         return nnx.All(*filters)
+
+
+@dataclasses.dataclass(frozen=True)
+class Pi0RTCConfig(Pi0Config):
+    """Use the same Pi0/π0.5 weights with RTC-guided action sampling."""
+
+    @override
+    def create(self, rng: at.KeyArrayLike) -> "Pi0RTC":
+        from openpi.models.pi0_rtc import Pi0RTC
+
+        return Pi0RTC(self, rngs=nnx.Rngs(rng))

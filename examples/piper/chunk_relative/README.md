@@ -43,3 +43,36 @@ uv run scripts/serve_policy.py --port 6006 policy:checkpoint \
 ```
 
 先用较少的执行步数观察运动，确认正确后再增加 `--steps`。需要更多硬件参数或离线评估时，直接使用 `examples/piper/runtime/inference_eef.py`。
+
+## 异步推理
+
+四个入口共用相同的相机、指令、20 Hz 控制循环和 50 步模型动作块；`--steps` 是每次收到推理结果后最多使用的未来动作数。第 0 步仍按同帧动作跳过。默认推理频率上限为 1 Hz，可用 `--inference-hz` 调整。异步入口默认每块执行最多 20 步；若像同步入口一样设置 `--steps 3`，动作约 0.15 秒后便会保持上一目标，直到下一次推理返回。
+
+```bash
+# 最新动作块覆盖等待队列
+.venv/bin/python examples/piper/chunk_relative/async_infer.py \
+  --base-camera 231122071797 --wrist-camera 0 --steps 20
+
+# 新旧动作块在重叠区平滑衔接
+.venv/bin/python examples/piper/chunk_relative/temporal_smoothing_infer.py \
+  --base-camera 231122071797 --wrist-camera 0 --steps 20
+
+# 按控制时间点融合多次预测
+.venv/bin/python examples/piper/chunk_relative/temporal_ensembling_infer.py \
+  --base-camera 231122071797 --wrist-camera 0 --steps 20
+```
+
+这三种模式使用上面的普通策略服务。融合时，先将每块相对 TCP 动作还原到机器人基座坐标系，再处理平移、旋转和夹爪；旋转按 SO(3) 融合。
+
+RTC 会在服务端采样时用上一块动作引导新块，需用同一个 **JAX 检查点**和专用配置启动服务：
+
+```bash
+uv run scripts/serve_policy.py --port 6006 policy:checkpoint \
+  --policy.config=pi05_piper_pick_cube_0928_chunk_relative_rtc \
+  --policy.dir=checkpoints/pi05_piper_pick_cube_0928_chunk_relative/pick_cube_0928/<step>
+
+.venv/bin/python examples/piper/chunk_relative/rtc_infer.py \
+  --base-camera 231122071797 --wrist-camera 0 --steps 20
+```
+
+RTC 客户端会检查服务端元数据。它发送对齐当前观测的上一完整动作块和实测推理延迟；服务端使用训练时相同的相对位姿转换与归一化。首次推理没有历史动作，因此直接采样。以上入口均为真机控制脚本，上机前按前述步骤核对坐标、夹爪与相机。
