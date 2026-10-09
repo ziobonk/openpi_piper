@@ -17,6 +17,7 @@ from examples.piper.data_tools.replay_lightumi_tcp_relative import (  # noqa: E4
     decode_tcp_actions,
     load_episode,
     make_targets,
+    relative_poses,
 )
 
 
@@ -89,7 +90,7 @@ def test_rotation_6d_rejects_bad_columns():
         decode_tcp_actions(np.array([[0, 0, 0, 1, 0, 0, 1, 0, 0]]))
 
 
-def test_live_path_anchors_once_and_sends_only_tcp(monkeypatch):
+def test_live_path_records_tcp_and_creates_gif(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
     from examples.piper.data_tools import replay_lightumi_tcp_relative as lightumi
@@ -100,15 +101,19 @@ def test_live_path_anchors_once_and_sends_only_tcp(monkeypatch):
     reads = []
 
     class Robot:
+        def __init__(self):
+            self.pose = np.array([0.4, 0, 0.3, 0, 0, 0])
+
         def enable(self, *, speed_pct):
             assert speed_pct == 30
             return True
 
         def get_eef_pose(self):
             reads.append(True)
-            return np.array([0.4, 0, 0.3, 0, 0, 0])
+            return self.pose.copy()
 
         def send_eef_command(self, pose):
+            self.pose = pose.copy()
             sent.append(pose.copy())
 
     monkeypatch.setattr(lightumi, "load_episode", lambda *_: (30.0, poses))
@@ -132,9 +137,32 @@ def test_live_path_anchors_once_and_sends_only_tcp(monkeypatch):
         max_total_rotation_deg=120,
         max_step_rotation_deg=20,
         workspace=None,
+        comparison_gif=tmp_path / "comparison.gif",
+        gif_fps=3,
     )
     lightumi.run(args)
-    assert len(reads) == 1
+    assert len(reads) == 2
     np.testing.assert_allclose(eef.GRIPPER_TCP_OFFSET_M, [0.01, 0.0, 0.25])
     assert len(sent) == 4
     np.testing.assert_allclose([pose[0] for pose in sent], [0.4025, 0.405, 0.4075, 0.41])
+
+    from PIL import Image
+
+    with np.load(tmp_path / "comparison.npz") as saved:
+        assert saved["dataset_relative_tcp"].shape == (2, 6)
+        assert saved["robot_absolute_tcp"].shape == (2, 6)
+        np.testing.assert_allclose(saved["dataset_relative_tcp"][:, 0], [0, 0.01])
+        np.testing.assert_allclose(saved["robot_relative_tcp"][:, 0], [0, 0.01])
+        np.testing.assert_allclose(saved["robot_absolute_tcp"][:, 0], [0.4, 0.41])
+        np.testing.assert_allclose(saved["target_absolute_tcp"][:, 0], [0.4, 0.41])
+        assert saved["elapsed_s"][1] >= 0
+    with Image.open(tmp_path / "comparison.gif") as gif:
+        assert gif.n_frames == 2
+
+
+def test_relative_pose_uses_initial_tcp_axes():
+    anchor = np.array([0.4, 0, 0.3, 0, 0, np.pi / 2])
+    second = np.array([0.4, 0.01, 0.3, 0, 0, np.pi / 2])
+    relative = relative_poses(np.stack([anchor, second]), anchor)
+    np.testing.assert_allclose(relative[0], np.zeros(6), atol=1e-10)
+    np.testing.assert_allclose(relative[1], [0.01, 0, 0, 0, 0, 0], atol=1e-10)

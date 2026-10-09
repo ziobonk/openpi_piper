@@ -12,6 +12,8 @@ T_piper_initial @ inv(T_lightumi_action_0) @ T_lightumi_action_k.
 from __future__ import annotations
 
 import argparse
+from datetime import UTC
+from datetime import datetime
 import json
 from pathlib import Path
 import sys
@@ -109,6 +111,123 @@ def make_targets(poses: np.ndarray, robot_base: np.ndarray) -> np.ndarray:
     return replay.chunk_relative_targets(actions, 0, len(actions) - 1, robot_base)
 
 
+def relative_poses(poses: np.ndarray, anchor: np.ndarray) -> np.ndarray:
+    """Express absolute TCP poses in their measured initial TCP frame."""
+    anchor_inverse = np.linalg.inv(replay._pose6_to_matrix(anchor))
+    return np.stack(
+        [replay._matrix_to_pose6(anchor_inverse @ replay._pose6_to_matrix(pose)) for pose in poses]
+    )
+
+
+def save_comparison(
+    gif_path: Path,
+    dataset_relative: np.ndarray,
+    robot_absolute: np.ndarray,
+    target_absolute: np.ndarray,
+    elapsed_s: np.ndarray,
+    dataset_anchor: np.ndarray,
+    robot_anchor: np.ndarray,
+    *,
+    episode: int,
+    dataset_fps: float,
+    gif_fps: float,
+) -> None:
+    """Persist every measured TCP sample and render a shared relative-path GIF."""
+    robot_relative = relative_poses(robot_absolute, robot_anchor)
+    if not (len(dataset_relative) == len(robot_relative) == len(target_absolute) == len(elapsed_s)):
+        raise ValueError("comparison traces must have matching frame counts")
+    gif_path.parent.mkdir(parents=True, exist_ok=True)
+    npz_path = gif_path.with_suffix(".npz")
+    np.savez_compressed(
+        npz_path,
+        dataset_relative_tcp=dataset_relative,
+        robot_relative_tcp=robot_relative,
+        robot_absolute_tcp=robot_absolute,
+        target_absolute_tcp=target_absolute,
+        elapsed_s=elapsed_s,
+        dataset_anchor=dataset_anchor,
+        robot_anchor=robot_anchor,
+        episode=episode,
+        dataset_fps=dataset_fps,
+    )
+    print(f"[Comparison] Saved {len(robot_relative)} aligned TCP samples: {npz_path}")
+    render_comparison_gif(gif_path, dataset_relative, robot_relative, elapsed_s, gif_fps=gif_fps)
+    print(f"[Comparison] Saved relative TCP trajectory GIF: {gif_path}")
+
+
+def render_comparison_gif(
+    gif_path: Path,
+    dataset_relative: np.ndarray,
+    robot_relative: np.ndarray,
+    elapsed_s: np.ndarray,
+    *,
+    gif_fps: float,
+) -> None:
+    """Draw dataset and measured TCP in their respective starting TCP axes."""
+    from matplotlib.animation import FuncAnimation
+    from matplotlib.animation import PillowWriter
+    import matplotlib.pyplot as plt
+
+    plt.switch_backend("Agg")
+
+    desired_mm = dataset_relative[:, :3] * 1000
+    actual_mm = robot_relative[:, :3] * 1000
+    position_error_mm = np.linalg.norm(desired_mm - actual_mm, axis=1)
+    desired_rotation = Rotation.from_rotvec(dataset_relative[:, 3:6])
+    actual_rotation = Rotation.from_rotvec(robot_relative[:, 3:6])
+    rotation_error_deg = np.rad2deg((desired_rotation.inv() * actual_rotation).magnitude())
+    fig, axes = plt.subplots(2, 2, figsize=(8, 7), constrained_layout=True)
+    projections = ((0, 1, "XY"), (0, 2, "XZ"), (1, 2, "YZ"))
+    moving_lines = []
+    for axis, (i, j, label) in zip(axes.flat[:3], projections, strict=True):
+        axis.plot(desired_mm[:, i], desired_mm[:, j], color="tab:blue", alpha=0.2, linewidth=1)
+        desired_line, = axis.plot([], [], color="tab:blue", label="Dataset TCP")
+        actual_line, = axis.plot([], [], color="tab:orange", label="Piper TCP")
+        desired_dot, = axis.plot([], [], "o", color="tab:blue", markersize=4)
+        actual_dot, = axis.plot([], [], "o", color="tab:orange", markersize=4)
+        moving_lines.append((desired_line, actual_line, desired_dot, actual_dot, i, j))
+        values = np.r_[desired_mm[:, [i, j]], actual_mm[:, [i, j]]]
+        low = values.min(axis=0)
+        high = values.max(axis=0)
+        middle = (low + high) / 2
+        half_span = max(float(np.max(high - low)) * 0.57, 5.0)
+        axis.set_xlim(middle[0] - half_span, middle[0] + half_span)
+        axis.set_ylim(middle[1] - half_span, middle[1] + half_span)
+        axis.set_aspect("equal", adjustable="box")
+        axis.set_xlabel(f"{label[0]} relative to start (mm)")
+        axis.set_ylabel(f"{label[1]} relative to start (mm)")
+        axis.grid(alpha=0.25)
+    axes.flat[0].legend(loc="best", fontsize=8)
+    error_axis = axes.flat[3]
+    position_line, = error_axis.plot([], [], color="tab:red", label="Position error (mm)")
+    error_axis.set_xlim(0, max(float(elapsed_s[-1]), 0.1))
+    error_axis.set_ylim(0, max(float(position_error_mm.max()) * 1.15, 1.0))
+    error_axis.set_xlabel("Elapsed replay time (s)")
+    error_axis.set_ylabel("Relative position error (mm)")
+    error_axis.grid(alpha=0.25)
+    error_axis.legend(loc="best", fontsize=8)
+
+    def update(frame: int):
+        for desired_line, actual_line, desired_dot, actual_dot, i, j in moving_lines:
+            desired_line.set_data(desired_mm[: frame + 1, i], desired_mm[: frame + 1, j])
+            actual_line.set_data(actual_mm[: frame + 1, i], actual_mm[: frame + 1, j])
+            desired_dot.set_data([desired_mm[frame, i]], [desired_mm[frame, j]])
+            actual_dot.set_data([actual_mm[frame, i]], [actual_mm[frame, j]])
+        position_line.set_data(elapsed_s[: frame + 1], position_error_mm[: frame + 1])
+        fig.suptitle(
+            f"TCP relative to each start | frame {frame}/{len(desired_mm) - 1} | "
+            f"position {position_error_mm[frame]:.1f} mm | rotation {rotation_error_deg[frame]:.1f} deg",
+            fontsize=10,
+        )
+        return ()
+
+    animation = FuncAnimation(fig, update, frames=len(desired_mm), interval=1000 / gif_fps)
+    try:
+        animation.save(gif_path, writer=PillowWriter(fps=gif_fps), dpi=80)
+    finally:
+        plt.close(fig)
+
+
 def run(args: argparse.Namespace) -> None:
     fps, poses = load_episode(args.data_dir, args.episode)
     count = len(poses) - 1 if args.max_frames is None else min(args.max_frames, len(poses) - 1)
@@ -147,9 +266,13 @@ def run(args: argparse.Namespace) -> None:
         f"[Replay] Piper TCP anchor {base.round(4)}, {subdivisions} commands/data frame, {period * 1000:.1f} ms interval"
     )
     errors = []
+    measured = [base.copy()]
+    commanded = [base.copy()]
+    elapsed = [0.0]
     try:
         if not args.yes:
             input("Check TCP axes, workspace, and clear path; press Enter to replay or Ctrl+C to cancel...")
+        started_at = time.monotonic()
         for frame_index, target in enumerate(targets, start=1):
             if args.step:
                 input(f"[Step] action {frame_index}/{count}; press Enter to send...")
@@ -159,8 +282,11 @@ def run(args: argparse.Namespace) -> None:
                 robot.send_eef_command(command[:6])
                 time.sleep(period)
             previous = target
+            actual = robot.get_eef_pose().astype(np.float64)
+            measured.append(actual)
+            commanded.append(target[:6].copy())
+            elapsed.append(time.monotonic() - started_at)
             if args.readback:
-                actual = robot.get_eef_pose()
                 error = np.linalg.inv(replay._pose6_to_matrix(target[:6])) @ replay._pose6_to_matrix(actual)
                 errors.append((np.linalg.norm(error[:3, 3]), Rotation.from_matrix(error[:3, :3]).magnitude()))
             if args.step or frame_index % 25 == 0 or frame_index == count:
@@ -176,6 +302,25 @@ def run(args: argparse.Namespace) -> None:
         print("[Replay] Interrupted")
     finally:
         print("[Replay] Robot remains enabled")
+        if len(measured) > 1:
+            gif_path = args.comparison_gif or (
+                Path("local/runs/outputs")
+                / f"{args.data_dir.name}_episode{args.episode:03d}_{datetime.now(UTC):%Y%m%d_%H%M%S_%f}_tcp_comparison.gif"
+            )
+            dataset_relative = np.vstack((np.zeros(6), relative[: len(measured) - 1, :6]))
+            gif_fps = args.gif_fps or max(1, min(30, round(fps * args.speed)))
+            save_comparison(
+                gif_path,
+                dataset_relative,
+                np.stack(measured),
+                np.stack(commanded),
+                np.asarray(elapsed),
+                poses[0],
+                base,
+                episode=args.episode,
+                dataset_fps=fps,
+                gif_fps=gif_fps,
+            )
 
 
 def main() -> None:
@@ -197,6 +342,8 @@ def main() -> None:
     )
     parser.add_argument("--step", action="store_true", help="confirm each data-frame target")
     parser.add_argument("--readback", action="store_true", help="summarize observed TCP tracking error")
+    parser.add_argument("--comparison-gif", type=Path, default=None, help="output GIF path; a matching .npz trace is saved")
+    parser.add_argument("--gif-fps", type=float, default=None, help="comparison GIF FPS; default follows replay time scale")
     parser.add_argument("--yes", action="store_true", help="skip the start prompt")
     parser.add_argument("--max-total-translation-m", type=float, default=0.5)
     parser.add_argument("--max-step-translation-m", type=float, default=0.05)
@@ -208,6 +355,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.speed <= 0 or not 20 <= args.speed_pct <= 100 or (args.max_frames is not None and args.max_frames < 1):
         parser.error("speed must be positive, speed-pct 20..100, and max-frames >= 1")
+    if args.comparison_gif is not None and args.comparison_gif.suffix.lower() != ".gif":
+        parser.error("comparison-gif must end in .gif")
+    if args.gif_fps is not None and (not np.isfinite(args.gif_fps) or args.gif_fps <= 0):
+        parser.error("gif-fps must be positive and finite")
     if args.tcp_offset_m is not None and (
         not np.isfinite(args.tcp_offset_m).all() or np.linalg.norm(args.tcp_offset_m) > 1.0
     ):

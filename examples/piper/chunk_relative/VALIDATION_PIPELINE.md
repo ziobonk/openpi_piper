@@ -98,6 +98,10 @@ git log -1 --oneline
   --max-frames 3 --step --speed 0.25 --readback
 ```
 
+每个目标帧下发完成后都会读取并保存 Piper SDK 反馈的法兰位姿经 TCP 偏移换算得到的实测 TCP，`--readback` 只控制终端是否打印追踪误差统计。回放结束或中途按 Ctrl+C 后，只要完成过至少一个目标帧，脚本会在 `local/runs/outputs/` 自动保存同名 `.npz` 和 `.gif`；可用 `--comparison-gif local/runs/outputs/my_trial.gif` 指定路径。GIF 的 XY、XZ、YZ 三个投影同时显示数据集与 Piper 的相对 TCP 轨迹，右下角显示相对位置误差随回放时间变化，标题显示当前帧的位置和姿态误差。绘图在机械臂运动结束后执行，不占用控制循环。
+
+两条轨迹分别以数据集首个 action TCP 和回放开始时的 Piper TCP 为原点，并用各自**初始 TCP 的坐标轴**表示。两端 TCP 轴方向需要一致，才能把它们的坐标与误差直接比较。`.npz` 保存 `dataset_relative_tcp`、`robot_relative_tcp`、`robot_absolute_tcp`、`target_absolute_tcp`、`elapsed_s` 和锚点；数组首行是锚点，后续行与已完成的目标帧逐行对齐。`.npz` 中的位姿单位为米和旋转向量弧度，`elapsed_s` 为秒；GIF 位置和误差显示为毫米。`--gif-fps` 可调整 GIF 播放帧率，不影响回放速度。`--dry-run` 只验证数据，不产生机械臂实测轨迹或 GIF。
+
 Piper 的 TCP 在本工程中由 `examples/piper/runtime/inference_eef.py` 的 `GRIPPER_TCP_OFFSET_M` 定义：默认 `[0, 0, 0.22]` 米，表示法兰 J6 到爪尖 TCP 的平移，数值应按实际工具测量。读位姿时用 `p_tcp = p_J6 + R_J6 @ offset`；下发目标时用 `p_J6 = p_tcp - R_target @ offset`。本入口可加 `--tcp-offset-m X Y Z` 临时覆盖，例如 `--tcp-offset-m 0 0 0.22`，只影响本次回放。该补偿假定 TCP 与 J6 轴方向一致；若工具坐标轴有固定旋转，还需完整的法兰到工具 SE(3) 标定。
 
 可先用 `examples/piper/hardware/test_tcp_control.py --offset 0 0 0.22 --step 0.005` 在有足够空间的真机上微调验证爪尖是否在旋转时保持原地。确认方向与工作空间后去掉 `--max-frames` 和 `--step` 可回放全程。可用 `--workspace XMIN XMAX YMIN YMAX ZMIN ZMAX` 按现场实际范围限制 Piper 基座坐标目标。默认回放时间倍率是 0.25，数据帧间插值后约以 30 Hz 下发 TCP 命令。真机开始前脚本会打印锚点并等待 Enter；按 Ctrl+C 中断。执行完机器人仍保持使能。本数据格式不适用于 `replay_picodual_lerobot.py` 的 7D chunk-relative 入口。
