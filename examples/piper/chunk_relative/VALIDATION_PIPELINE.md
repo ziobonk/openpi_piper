@@ -78,3 +78,24 @@ Pico 数据的归一化、训练配置、服务与推理命令见 [README](READM
 git status --short
 git log -1 --oneline
 ```
+
+## lightUMI 9D 数据的 TCP-relative 回放
+
+`lightumi_20261009_212049` 是单路 30 Hz LeRobot 数据：`action` 为下一对齐帧的绝对 PICO World TCP `[xyz, rotation-6D]`，旋转 6D 按旋转矩阵前两列分组保存；没有夹爪动作或 TCP 状态。专用入口只读取 Parquet 的 action 列，不解码视频。它以第一个 action 为数据基准，以启动时实测 Piper TCP 为机器人基准，执行 `T_robot_start @ inv(T_action[0]) @ T_action[k]`。首个 action 只作基准，末尾重复 action 被丢弃，夹爪保持原状态。此模式从启动到结束只锚定一次，要求两端 TCP 原点与轴方向一致。
+
+先离线验证（不会连接机械臂）：
+
+```bash
+.venv/bin/python examples/piper/data_tools/replay_lightumi_tcp_relative.py \
+  --data-dir local/datasets/lightumi_20261009_212049 --episode 0 --dry-run
+```
+
+本地数据检查得到 282 个不重复的 action 位姿、281 个未来 TCP 目标；相对首目标最大平移约 155 mm，最大单步平移约 3.6 mm、旋转约 0.24°。首次在有 `can0` 的机械臂端只试前几步，逐帧确认：
+
+```bash
+.venv/bin/python examples/piper/data_tools/replay_lightumi_tcp_relative.py \
+  --data-dir local/datasets/lightumi_20261009_212049 --episode 0 \
+  --max-frames 3 --step --speed 0.25 --readback
+```
+
+确认方向与工作空间后去掉 `--max-frames` 和 `--step` 可回放全程。可用 `--workspace XMIN XMAX YMIN YMAX ZMIN ZMAX` 按现场实际范围限制 Piper 基座坐标目标。默认回放时间倍率是 0.25，数据帧间插值后约以 30 Hz 下发 TCP 命令。真机开始前脚本会打印锚点并等待 Enter；按 Ctrl+C 中断。执行完机器人仍保持使能。本数据格式不适用于 `replay_picodual_lerobot.py` 的 7D chunk-relative 入口。
