@@ -45,7 +45,8 @@ def test_rotation_columns_and_tcp_anchor_use_full_se3():
     np.testing.assert_allclose(target[0, 6], 0)
 
 
-def test_loader_drops_repeated_last_next_action(tmp_path):
+@pytest.mark.parametrize("world", ["PICO-world", "source-tracking-world"])
+def test_loader_drops_repeated_last_next_action(tmp_path, world):
     root = tmp_path / "lightumi"
     (root / "meta").mkdir(parents=True)
     (root / "data/chunk-000").mkdir(parents=True)
@@ -56,7 +57,7 @@ def test_loader_drops_repeated_last_next_action(tmp_path):
         "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
         "features": {"action": {"shape": [9], "names": ["x", "y", "z", *ROTATION_NAMES]}},
         "lightumi_conversion": {
-            "action": "next aligned absolute PICO-world TCP xyz + rotation-6D, without a gripper angle",
+            "action": f"next aligned absolute {world} TCP xyz + rotation-6D, without a gripper angle",
             "rotation_6d": "columns_grouped:[r00,r10,r20,r01,r11,r21]",
         },
     }

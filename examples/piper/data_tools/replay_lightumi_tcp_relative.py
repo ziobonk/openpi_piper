@@ -2,7 +2,7 @@
 # ruff: noqa: E402, SLF001
 """Replay lightUMI 9D absolute TCP actions relative to the current Piper TCP.
 
-The dataset action is the *next* aligned PICO-world TCP pose, encoded as xyz
+The dataset action is the *next* aligned absolute tracking-world TCP pose, encoded as xyz
 and the first two rotation-matrix columns (columns grouped). There is no TCP
 state or gripper action. The first action is used as a pose anchor, and the
 repeated last action is dropped. For every remaining action k, command
@@ -69,8 +69,12 @@ def load_episode(data_dir: Path, episode: int) -> tuple[float, np.ndarray]:
     if info["features"]["action"].get("names", [])[3:] != ROTATION_NAMES:
         raise ValueError("unexpected rotation-6D column order")
     conversion = info.get("lightumi_conversion", {})
-    if "next aligned absolute PICO-world TCP" not in conversion.get("action", ""):
-        raise ValueError("expected next-aligned absolute PICO-world TCP actions")
+    action_description = conversion.get("action", "")
+    if not any(
+        f"next aligned absolute {world} TCP" in action_description
+        for world in ("PICO-world", "source-tracking-world")
+    ):
+        raise ValueError("expected next-aligned absolute tracking-world TCP actions")
     if conversion.get("rotation_6d") != "columns_grouped:[r00,r10,r20,r01,r11,r21]":
         raise ValueError("unexpected rotation-6D encoding")
     episodes = {
