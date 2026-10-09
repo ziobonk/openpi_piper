@@ -196,7 +196,7 @@ GRIPPER_SPEED_RAD_S = 6.0  # 移动速度上限 (rad/s)
 # Piper SDK 的 EndPoseCtrl / GetArmEndPoseMsgs 都是法兰位姿，推理状态和动作
 # 使用爪尖位姿，所以在收发两端都要补偿这一步:
 #   读: 爪尖 = 法兰 + R @ offset      写: 法兰 = 爪尖 - R @ offset
-# ⚠ 请按实际测量值填写 (夹爪本体长度 + 指尖到法兰的距离)。默认全 0 = 不补偿。
+# ⚠ 请按实际测量值填写 (夹爪本体长度 + 指尖到法兰的距离)。设置为全 0 表示不补偿；当前工程默认 Z 偏移为 0.22 m。
 GRIPPER_TCP_OFFSET_M = np.array([0.0, 0.0, 0.22], dtype=np.float64)
 
 # pick_cube was converted with the previous controller-to-virtual-TCP mount.

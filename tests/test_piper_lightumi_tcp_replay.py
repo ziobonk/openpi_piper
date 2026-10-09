@@ -112,6 +112,7 @@ def test_live_path_anchors_once_and_sends_only_tcp(monkeypatch):
             sent.append(pose.copy())
 
     monkeypatch.setattr(lightumi, "load_episode", lambda *_: (30.0, poses))
+    monkeypatch.setattr(eef, "GRIPPER_TCP_OFFSET_M", np.array([0.0, 0.0, 0.22]))
     monkeypatch.setattr(eef, "PiperEEFController", lambda *_, **kwargs: Robot())
     monkeypatch.setattr(lightumi.time, "sleep", lambda _: None)
     args = SimpleNamespace(
@@ -122,6 +123,7 @@ def test_live_path_anchors_once_and_sends_only_tcp(monkeypatch):
         speed=0.25,
         speed_pct=30,
         can_name="can0",
+        tcp_offset_m=[0.01, 0.0, 0.25],
         step=False,
         readback=False,
         yes=True,
@@ -133,5 +135,6 @@ def test_live_path_anchors_once_and_sends_only_tcp(monkeypatch):
     )
     lightumi.run(args)
     assert len(reads) == 1
+    np.testing.assert_allclose(eef.GRIPPER_TCP_OFFSET_M, [0.01, 0.0, 0.25])
     assert len(sent) == 4
     np.testing.assert_allclose([pose[0] for pose in sent], [0.4025, 0.405, 0.4075, 0.41])

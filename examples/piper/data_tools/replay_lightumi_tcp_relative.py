@@ -131,6 +131,9 @@ def run(args: argparse.Namespace) -> None:
 
     from examples.piper.runtime import inference_eef as eef
 
+    if args.tcp_offset_m is not None:
+        eef.GRIPPER_TCP_OFFSET_M[:] = args.tcp_offset_m
+    print(f"[TCP] J6-to-TCP offset in flange axes: {eef.GRIPPER_TCP_OFFSET_M.tolist()} m")
     robot = eef.PiperEEFController(args.can_name, control_gripper=False)
     if not robot.enable(speed_pct=args.speed_pct):
         raise RuntimeError("Piper enable failed")
@@ -184,6 +187,14 @@ def main() -> None:
     parser.add_argument("--speed", type=float, default=0.25, help="dataset playback time scale; default 0.25")
     parser.add_argument("--speed-pct", type=int, default=30, help="Piper Cartesian speed percentage")
     parser.add_argument("--can-name", default="can0")
+    parser.add_argument(
+        "--tcp-offset-m",
+        type=float,
+        nargs=3,
+        default=None,
+        metavar=("X", "Y", "Z"),
+        help="J6 flange to TCP translation in flange axes (m); overrides the project default for this run",
+    )
     parser.add_argument("--step", action="store_true", help="confirm each data-frame target")
     parser.add_argument("--readback", action="store_true", help="summarize observed TCP tracking error")
     parser.add_argument("--yes", action="store_true", help="skip the start prompt")
@@ -197,6 +208,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.speed <= 0 or not 20 <= args.speed_pct <= 100 or (args.max_frames is not None and args.max_frames < 1):
         parser.error("speed must be positive, speed-pct 20..100, and max-frames >= 1")
+    if args.tcp_offset_m is not None and (
+        not np.isfinite(args.tcp_offset_m).all() or np.linalg.norm(args.tcp_offset_m) > 1.0
+    ):
+        parser.error("tcp-offset-m must be finite meters with length <= 1 m")
     if args.workspace is not None and any(args.workspace[i] >= args.workspace[i + 1] for i in (0, 2, 4)):
         parser.error("workspace minimum must be less than maximum on each axis")
     run(args)

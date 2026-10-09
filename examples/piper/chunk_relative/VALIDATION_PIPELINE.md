@@ -98,4 +98,6 @@ git log -1 --oneline
   --max-frames 3 --step --speed 0.25 --readback
 ```
 
-确认方向与工作空间后去掉 `--max-frames` 和 `--step` 可回放全程。可用 `--workspace XMIN XMAX YMIN YMAX ZMIN ZMAX` 按现场实际范围限制 Piper 基座坐标目标。默认回放时间倍率是 0.25，数据帧间插值后约以 30 Hz 下发 TCP 命令。真机开始前脚本会打印锚点并等待 Enter；按 Ctrl+C 中断。执行完机器人仍保持使能。本数据格式不适用于 `replay_picodual_lerobot.py` 的 7D chunk-relative 入口。
+Piper 的 TCP 在本工程中由 `examples/piper/runtime/inference_eef.py` 的 `GRIPPER_TCP_OFFSET_M` 定义：默认 `[0, 0, 0.22]` 米，表示法兰 J6 到爪尖 TCP 的平移，数值应按实际工具测量。读位姿时用 `p_tcp = p_J6 + R_J6 @ offset`；下发目标时用 `p_J6 = p_tcp - R_target @ offset`。本入口可加 `--tcp-offset-m X Y Z` 临时覆盖，例如 `--tcp-offset-m 0 0 0.22`，只影响本次回放。该补偿假定 TCP 与 J6 轴方向一致；若工具坐标轴有固定旋转，还需完整的法兰到工具 SE(3) 标定。
+
+可先用 `examples/piper/hardware/test_tcp_control.py --offset 0 0 0.22 --step 0.005` 在有足够空间的真机上微调验证爪尖是否在旋转时保持原地。确认方向与工作空间后去掉 `--max-frames` 和 `--step` 可回放全程。可用 `--workspace XMIN XMAX YMIN YMAX ZMIN ZMAX` 按现场实际范围限制 Piper 基座坐标目标。默认回放时间倍率是 0.25，数据帧间插值后约以 30 Hz 下发 TCP 命令。真机开始前脚本会打印锚点并等待 Enter；按 Ctrl+C 中断。执行完机器人仍保持使能。本数据格式不适用于 `replay_picodual_lerobot.py` 的 7D chunk-relative 入口。
