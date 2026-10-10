@@ -47,6 +47,63 @@ def test_action_window_is_relative_to_its_first_pose_and_frame_invariant():
     np.testing.assert_allclose(shifted_result, result, atol=1e-6)
 
 
+def test_training_delta_reanchors_in_measured_robot_tcp_frame():
+    source = np.array([
+        [0.2, -0.1, 0.4, 0.2, 0.1, -0.3, 0.1],
+        [0.23, -0.08, 0.43, -0.1, 0.25, 0.4, 0.2],
+    ])
+    anchor = np.array([0.45, 0.05, 0.35, -0.2, 0.3, 0.1])
+    local = ChunkRelativeEEFActions()({"state": np.array([0.1]), "actions": source.copy()})["actions"]
+    future = eef._execution_actions(local, "chunk_relative")
+    assert len(future) == 1
+    target = eef._compose_pose6(anchor, future[0, :6])
+    expected = _pose_matrix(anchor) @ np.linalg.inv(_pose_matrix(source[0, :6])) @ _pose_matrix(source[1, :6])
+    np.testing.assert_allclose(_pose_matrix(target), expected, atol=1e-7)
+
+
+def test_flange_tcp_offset_read_and_command_are_inverses(monkeypatch):
+    offset = np.array([0.01, -0.02, 0.22])
+    monkeypatch.setattr(eef, "GRIPPER_TCP_OFFSET_M", offset)
+    flange = np.array([0.45, 0.1, 0.3])
+    euler_deg = np.array([25.0, -10.0, 35.0])
+    feedback = SimpleNamespace(
+        X_axis=int(round(flange[0] * 1e6)),
+        Y_axis=int(round(flange[1] * 1e6)),
+        Z_axis=int(round(flange[2] * 1e6)),
+        RX_axis=int(round(euler_deg[0] * 1000)),
+        RY_axis=int(round(euler_deg[1] * 1000)),
+        RZ_axis=int(round(euler_deg[2] * 1000)),
+    )
+    commands = []
+    robot = eef.PiperEEFController.__new__(eef.PiperEEFController)
+    robot._piper = SimpleNamespace(
+        GetArmEndPoseMsgs=lambda: SimpleNamespace(end_pose=feedback),
+        EndPoseCtrl=lambda *values: commands.append(values),
+    )
+    robot._last_command_euler_rad = None
+    measured_tcp = robot.get_eef_pose()
+    rotation = Rotation.from_euler("xyz", euler_deg, degrees=True)
+    np.testing.assert_allclose(measured_tcp[:3], flange + rotation.apply(offset), atol=1e-6)
+    robot.send_eef_command(measured_tcp)
+    np.testing.assert_allclose(np.array(commands[0][:3]) / 1e6, flange, atol=1e-6)
+    np.testing.assert_allclose(np.array(commands[0][3:]) / 1000, euler_deg, atol=1e-3)
+
+
+def test_failed_policy_query_clears_old_chunk_and_tcp_anchor(monkeypatch):
+    client = eef.PiperEEFInference.__new__(eef.PiperEEFInference)
+    client._action_cache = np.ones((3, 7), dtype=np.float32)
+    client._chunk_tcp_base = np.ones(6)
+    client._model_action_frame = "chunk_relative"
+    client._inferring = True
+    client._build_observation = lambda: {"prompt": "test"}
+    client._policy_client = SimpleNamespace(infer=lambda obs: (_ for _ in ()).throw(RuntimeError("offline")))
+    client._connect_policy = lambda: None
+    monkeypatch.setattr(eef.time, "sleep", lambda _: None)
+    client._query_policy()
+    assert client._action_cache is None
+    assert client._chunk_tcp_base is None
+
+
 def test_clients_send_only_gripper_and_capture_each_chunk_base():
     tcp = np.array([0.4, 0.0, 0.3, 0.0, 0.2, 0.1])
     robot_state = np.r_[tcp, 11.0]

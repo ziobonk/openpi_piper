@@ -1263,12 +1263,16 @@ class PiperEEFInference:
             cv2.waitKey(1)
 
     def _query_policy(self):
+        # A failed query must never replay the previous chunk against a newly
+        # captured TCP base.
+        self._action_cache = None
+        self._chunk_tcp_base = None
         try:
             obs = self._build_observation()
             result = self._policy_client.infer(obs)
             actions = np.asarray(result["actions"], dtype=np.float32)
-            if actions.ndim != 2 or actions.shape[0] == 0 or actions.shape[1] < 7:
-                raise ValueError(f"策略 actions 形状应为 (N, >=7)，实际为 {actions.shape}")
+            if actions.ndim != 2 or actions.shape[0] == 0 or actions.shape[1] < 7 or not np.isfinite(actions).all():
+                raise ValueError(f"策略 actions 应为有限的 (N, >=7) 数组，实际为 {actions.shape}")
             self._action_cache = _execution_actions(actions, self._model_action_frame)[:, :7]
             grip = self._action_cache[:, 6]
             scaled_grip = np.array(
@@ -1300,6 +1304,8 @@ class PiperEEFInference:
                     parts.append(f"server={server_timings.get('total_ms', 0):.0f}ms")
                 print(f"  [Policy] {' | '.join(parts)}")
         except Exception as e:
+            self._action_cache = None
+            self._chunk_tcp_base = None
             print(f"[Policy] 查询失败: {e}")
             time.sleep(1)
             try:

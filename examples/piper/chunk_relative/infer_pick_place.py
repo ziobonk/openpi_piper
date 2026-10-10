@@ -19,6 +19,8 @@ def training_metadata(dataset: Path) -> tuple[float, tuple[float, float], float,
     if (
         info.get("robot_type") != "piper_chunk_relative_eef"
         or info.get("source_kind") != "lightumi"
+        or info.get("pose_coordinate_frame") != "source_tracking_world_tcp"
+        or info.get("coordinate_transform_applied") is not False
         or mapping.get("applied_to_dataset") is not False
         or mapping.get("source_unit") != "rad"
         or mapping.get("larger_angle_means_open") is not True

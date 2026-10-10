@@ -121,5 +121,13 @@ uv run examples/piper/chunk_relative/infer_pick_place.py \
 为基准。命令可加 `--tcp-offset-m X Y Z` 指定实测 J6 到 TCP 偏移；
 `0 0 0` 表示以 J6 法兰原点为 TCP。数据集 TCP 轴、相机视角和真实工具定义应与推理现场一致。
 
+坐标链核对：训练目标为 `D[k] = inv(T_source_tcp[0]) @ T_source_tcp[k]`；
+推理跳过同帧第 0 步，并用观测时的实测机器人 TCP 计算
+`T_robot_target[k] = T_robot_observed @ D[k]`。Piper SDK 提供法兰位姿，
+读回时加上 `R_flange @ tcp_offset`，下发时减去 `R_target @ tcp_offset`。
+这些等式要求 source TCP 与 Piper TCP 的工具轴同向；本次部署已人工确认同向，
+但数据集元数据未记录该标定，换工具后应重新核对。`--tcp-offset-m` 只设置
+法兰到 TCP 的平移，数值仍须与实际工具原点一致。
+
 `local/`、`assets/` 和检查点不随 Git 提交；服务器需分别收到准备后数据、
 服务器生成的统计以及训练代码。无需把原始 `pick_place` 目录传到服务器训练。
