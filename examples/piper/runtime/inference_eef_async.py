@@ -545,6 +545,7 @@ def main(args=None, *, mode: str = "temporal_smoothing"):
         max_rot_speed=args.max_rot_speed,
         interp_freq=args.interp_freq if args.interp_freq and args.interp_freq > 0 else None,
         gripper_port=args.gripper_port or None,
+        gripper_open_rad=args.gripper_open_rad,
         gripper_close_rad=args.gripper_close_rad,
         gripper_open_width_mm=args.gripper_open_width_mm,
         gripper_binary_threshold_mm=(

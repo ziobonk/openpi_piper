@@ -7,6 +7,7 @@ import threading
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from scipy.spatial.transform import Rotation
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,6 +81,31 @@ def test_chunk_relative_gripper_is_mapped_only_at_inference():
         observation = client._build_observation()
         np.testing.assert_allclose(observation["observation/state"], [0.5])
         np.testing.assert_allclose(client._model_gripper_to_runtime(0.5), 10.0)
+
+
+def test_dm_gripper_maps_width_to_negative_open_angle(monkeypatch):
+    sent = []
+
+    class FakeDmGripper:
+        def __init__(self, motor, **kwargs):
+            self.speed = kwargs["speed_rad_s"]
+
+        def set_position(self, position):
+            sent.append((position, self.speed))
+
+        def position(self):
+            return -5.0
+
+    monkeypatch.setattr(eef, "Usb2Can", lambda port: SimpleNamespace(port=port))
+    monkeypatch.setattr(eef, "DmJ4310", lambda bus, can_id: SimpleNamespace(bus=bus, can_id=can_id))
+    monkeypatch.setattr(eef, "DmGripper", FakeDmGripper)
+    gripper = eef.DmGripperController(open_rad=-10.0, close_rad=0.0, speed_rad_s=10.0)
+    for width in (0, 10, 20):
+        gripper.send(width)
+    assert sent == [(0.0, 10.0), (-5.0, 10.0), (-10.0, 10.0)]
+    assert gripper.read_mm() == 10.0
+    with pytest.raises(ValueError, match="开闭角度必须不同"):
+        eef.DmGripperController(open_rad=0.0, close_rad=0.0)
 
 
 def test_async_buffered_absolute_target_uses_captured_base():

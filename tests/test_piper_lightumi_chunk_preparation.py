@@ -92,6 +92,10 @@ def test_next_frame_tcp_becomes_same_frame_and_gripper_stays_radians(tmp_path, m
     assert captured[0].control_freq == 30
     np.testing.assert_allclose(captured[0].model_gripper_range, [0.1, 0.3])
     assert captured[0].gripper_open_width_mm == 20
+    assert captured[0].gripper_open_rad == -10
+    assert captured[0].gripper_close_rad == 0
+    assert captured[0].gripper_speed == 10
+    assert captured[0].gripper_port == infer_pick_place.inference_eef.GRIPPER_PORT
     assert captured[0].prompt == "把方块放到纸盒子里"
 
     new_prompt = "<control mode> end effector <control mode>pick up the yellow cube then drop it into the box."

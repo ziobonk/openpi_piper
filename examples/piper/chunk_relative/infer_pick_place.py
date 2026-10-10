@@ -45,9 +45,14 @@ def main() -> None:
     parser.add_argument("--wrist-camera", type=int, required=True, help="OpenCV wrist camera index")
     parser.add_argument("--steps", type=int, default=3, help="future steps per query, 1..49")
     parser.add_argument("--tcp-offset-m", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"))
+    parser.add_argument("--gripper-port", default=inference_eef.GRIPPER_PORT, help="DM USB2CAN serial port")
     args = parser.parse_args()
     if not 1 <= args.steps <= 49 or not 1 <= args.port <= 65535:
         parser.error("steps must be 1..49 and port 1..65535")
+    if not args.gripper_port:
+        parser.error("pick_place inference requires a DM gripper serial port")
+    if not inference_eef._HAS_DM_GRIPPER:
+        parser.error("DM gripper driver is unavailable")
     fps, (closed, opened), open_width_mm, prompt = training_metadata(args.dataset)
     runtime_argv = [
         "--host", args.host,
@@ -58,6 +63,10 @@ def main() -> None:
         "--model_action_frame", "chunk_relative",
         "--model_gripper_range", str(closed), str(opened),
         "--gripper_open_width_mm", str(open_width_mm),
+        "--gripper_port", args.gripper_port,
+        "--gripper_open_rad", "-10",
+        "--gripper_close_rad", "0",
+        "--gripper_speed", "10",
         "--control_freq", str(fps),
         "--prompt", prompt,
     ]

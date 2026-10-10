@@ -641,7 +641,7 @@ class DmGripperController:
 
     通过 USB2CAN 模块 (``/dev/ttyACM1``) 控制，与机械臂的 can0 相互独立。
     二值物理命令约定: 0 = 全闭，open_width_mm = 全开；
-    电机约定 0 rad = 全开，close_rad = 全闭，故二者为反比映射。
+    电机开闭角度由 open_rad / close_rad 指定。
     """
 
     def __init__(
@@ -654,13 +654,18 @@ class DmGripperController:
         current_limit: float = GRIPPER_CURRENT_LIMIT,
         speed_rad_s: float = GRIPPER_SPEED_RAD_S,
     ):
+        self._open_width_mm = float(open_width_mm)
+        self._open_rad = float(open_rad)
+        self._close_rad = float(close_rad)
+        if not np.isfinite([self._open_rad, self._close_rad, self._open_width_mm]).all():
+            raise ValueError("DM 夹爪开闭角度和开度必须为有限数")
+        if self._open_rad == self._close_rad or self._open_width_mm <= 0:
+            raise ValueError("DM 夹爪开闭角度必须不同，开度必须大于 0")
         self._bus = Usb2Can(port=port)
         self._motor = DmJ4310(self._bus, can_id=can_id)
         self._gripper = DmGripper(
             self._motor, open_rad=open_rad, close_rad=close_rad, speed_rad_s=speed_rad_s, current_limit=current_limit
         )
-        self._open_width_mm = float(open_width_mm)
-        self._close_rad = float(close_rad)
 
     # ---- 生命周期 ----
     def enable(self) -> bool:
@@ -680,11 +685,11 @@ class DmGripperController:
     # ---- mm <-> rad 映射 ----
     def _mm_to_rad(self, mm: float) -> float:
         frac = max(0.0, min(1.0, float(mm) / self._open_width_mm))
-        return self._close_rad * (1.0 - frac)
+        return self._close_rad + frac * (self._open_rad - self._close_rad)
 
     def _rad_to_mm(self, rad: float) -> float:
-        frac = max(0.0, min(1.0, float(rad) / self._close_rad))
-        return self._open_width_mm * (1.0 - frac)
+        frac = (float(rad) - self._close_rad) / (self._open_rad - self._close_rad)
+        return self._open_width_mm * max(0.0, min(1.0, frac))
 
     # ---- 控制 / 读取 ----
     def send(self, gripper_mm: float):
@@ -834,6 +839,7 @@ class PiperEEFInference:
         max_rot_speed: float = DEFAULT_MAX_ROT_SPEED,
         interp_freq: Optional[float] = DEFAULT_INTERP_FREQ,
         gripper_port: Optional[str] = GRIPPER_PORT,
+        gripper_open_rad: float = GRIPPER_OPEN_RAD,
         gripper_close_rad: float = GRIPPER_CLOSE_RAD,
         gripper_open_width_mm: float = GRIPPER_OPEN_WIDTH_MM,
         gripper_binary_threshold_mm: Optional[float] = None,
@@ -913,6 +919,7 @@ class PiperEEFInference:
             print(f"[Gripper] 使用达妙 DM-J4310-2EC 夹爪 ({gripper_port})")
             gripper = DmGripperController(
                 port=gripper_port,
+                open_rad=gripper_open_rad,
                 close_rad=gripper_close_rad,
                 open_width_mm=gripper_open_width_mm,
                 current_limit=gripper_current,
@@ -1950,6 +1957,12 @@ def _parse_args(parser=None, argv=None):
         "--gripper_port", default=GRIPPER_PORT, help=f"DM 夹爪 USB2CAN 串口 (默认: {GRIPPER_PORT}；传空串回退原生夹爪)"
     )
     p.add_argument(
+        "--gripper_open_rad",
+        type=float,
+        default=GRIPPER_OPEN_RAD,
+        help=f"DM 夹爪全开位置 rad (默认: {GRIPPER_OPEN_RAD})",
+    )
+    p.add_argument(
         "--gripper_close_rad",
         type=float,
         default=GRIPPER_CLOSE_RAD,
@@ -2129,6 +2142,7 @@ def main(args=None):
         max_rot_speed=args.max_rot_speed,
         interp_freq=args.interp_freq if args.interp_freq and args.interp_freq > 0 else None,
         gripper_port=args.gripper_port or None,
+        gripper_open_rad=args.gripper_open_rad,
         gripper_close_rad=args.gripper_close_rad,
         gripper_open_width_mm=args.gripper_open_width_mm,
         gripper_binary_threshold_mm=(

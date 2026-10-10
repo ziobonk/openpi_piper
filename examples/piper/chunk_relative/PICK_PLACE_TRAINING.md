@@ -106,11 +106,15 @@ uv run scripts/serve_policy.py --port 6006 policy:checkpoint \
 uv run examples/piper/chunk_relative/infer_pick_place.py \
   --host <server> --port 6006 \
   --base-camera <realsense_serial> --wrist-camera <opencv_index> \
-  --steps 3
+  --gripper-port /dev/ttyACM0 --steps 3
 ```
 
-运行时将 Piper 夹爪读回的 `0..20 mm` 映射为模型状态的源角度，再把模型预测角度
-映射回 Piper 的毫米开度。位姿仍按 chunk-relative 规则，以每次推理时的实测 TCP
+机器人端需能读取准备后数据集的 `meta/info.json` 和 `meta/tasks.jsonl`。
+此入口使用 DM 夹爪：`0 rad` 为关、`-10 rad` 为开，速度上限设为 `10 rad/s`；
+串口按设备实际位置调整。运行时先把 DM 位置按 `0..20 mm` 的虚拟开度换算为
+模型状态的源编码器角度，再把模型预测的源角度换算为 DM 目标位置。
+源角度闭/开端点取自数据集元数据，超出范围的目标会被限幅；数据集本身仍保留原始角度。
+位姿仍按 chunk-relative 规则，以每次推理时的实测 TCP
 为基准。命令可加 `--tcp-offset-m X Y Z` 指定实测 J6 到 TCP 偏移；
 `0 0 0` 表示以 J6 法兰原点为 TCP。数据集 TCP 轴、相机视角和真实工具定义应与推理现场一致。
 
