@@ -46,7 +46,8 @@ def test_rotation_columns_and_tcp_anchor_use_full_se3():
 
 
 @pytest.mark.parametrize("world", ["PICO-world", "source-tracking-world"])
-def test_loader_drops_repeated_last_next_action(tmp_path, world):
+@pytest.mark.parametrize("has_gripper", [False, True])
+def test_loader_drops_repeated_last_next_action(tmp_path, world, has_gripper):
     root = tmp_path / "lightumi"
     (root / "meta").mkdir(parents=True)
     (root / "data/chunk-000").mkdir(parents=True)
@@ -55,7 +56,12 @@ def test_loader_drops_repeated_last_next_action(tmp_path, world):
         "fps": 30,
         "chunks_size": 1000,
         "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
-        "features": {"action": {"shape": [9], "names": ["x", "y", "z", *ROTATION_NAMES]}},
+        "features": {
+            "action": {
+                "shape": [10 if has_gripper else 9],
+                "names": ["x", "y", "z", *ROTATION_NAMES, *(["gripper_angle_rad"] if has_gripper else [])],
+            }
+        },
         "lightumi_conversion": {
             "action": f"next aligned absolute {world} TCP xyz + rotation-6D, without a gripper angle",
             "rotation_6d": "columns_grouped:[r00,r10,r20,r01,r11,r21]",
@@ -75,6 +81,9 @@ def test_loader_drops_repeated_last_next_action(tmp_path, world):
     )
     first = _action([1, 2, 3], Rotation.identity())
     second = _action([1.01, 2, 3], Rotation.from_euler("z", 0.1))
+    if has_gripper:
+        first = np.r_[first, 0.2]
+        second = np.r_[second, 0.4]
     pd.DataFrame({"frame_index": [0, 1, 2], "action": [first, second, second]}).to_parquet(
         root / "data/chunk-000/episode_000000.parquet"
     )

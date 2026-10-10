@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # ruff: noqa: E402, SLF001
-"""Replay lightUMI 9D absolute TCP actions relative to the current Piper TCP.
+"""Replay lightUMI 9D/10D absolute TCP actions relative to the current Piper TCP.
 
 The dataset action is the *next* aligned absolute tracking-world TCP pose, encoded as xyz
-and the first two rotation-matrix columns (columns grouped). There is no TCP
-state or gripper action. The first action is used as a pose anchor, and the
-repeated last action is dropped. For every remaining action k, command
+and the first two rotation-matrix columns (columns grouped). A 10D action also
+contains a source gripper angle, which is deliberately not commanded. There is
+no TCP state. The first action is used as a pose anchor, and the repeated last
+action is dropped. For every remaining action k, command
 T_piper_initial @ inv(T_lightumi_action_0) @ T_lightumi_action_k.
 """
 
@@ -64,10 +65,14 @@ def load_episode(data_dir: Path, episode: int) -> tuple[float, np.ndarray]:
     import pandas as pd
 
     info = json.loads((data_dir / "meta/info.json").read_text())
-    if info.get("robot_type") != "lightumi" or info.get("features", {}).get("action", {}).get("shape") != [9]:
-        raise ValueError("expected lightUMI 9D TCP action dataset")
-    if info["features"]["action"].get("names", [])[3:] != ROTATION_NAMES:
-        raise ValueError("unexpected rotation-6D column order")
+    action_feature = info.get("features", {}).get("action", {})
+    action_shape = action_feature.get("shape")
+    if info.get("robot_type") != "lightumi" or action_shape not in ([9], [10]):
+        raise ValueError("expected lightUMI 9D/10D TCP action dataset")
+    names = action_feature.get("names", [])
+    expected_names = ROTATION_NAMES + (["gripper_angle_rad"] if action_shape == [10] else [])
+    if names[3:] != expected_names:
+        raise ValueError("unexpected TCP rotation-6D or gripper column order")
     conversion = info.get("lightumi_conversion", {})
     action_description = conversion.get("action", "")
     if not any(
@@ -106,7 +111,7 @@ def load_episode(data_dir: Path, episode: int) -> tuple[float, np.ndarray]:
     fps = float(info["fps"])
     if not np.isfinite(fps) or fps <= 0:
         raise ValueError("dataset FPS must be positive")
-    return fps, decode_tcp_actions(actions[:-1])
+    return fps, decode_tcp_actions(actions[:-1, :9])
 
 
 def make_targets(poses: np.ndarray, robot_base: np.ndarray) -> np.ndarray:
@@ -243,7 +248,7 @@ def run(args: argparse.Namespace) -> None:
     print(
         f"[lightUMI] episode {args.episode}: {len(poses)} unique action poses, {count} future TCP targets, {fps:g} Hz"
     )
-    print("[lightUMI] action[0] is the data anchor; the repeated final action and gripper are not commanded")
+    print("[lightUMI] action[0] is the data anchor; the repeated final action is dropped; any gripper angle is ignored")
     print(
         f"[lightUMI] max relative displacement {np.max(np.linalg.norm(relative[:, :3], axis=1)) * 1000:.1f} mm; "
         f"max step {pos_steps.max() * 1000:.1f} mm, {np.rad2deg(rot_steps.max()):.2f} deg"
@@ -328,7 +333,7 @@ def run(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Replay lightUMI 9D TCP actions in Piper TCP-relative mode")
+    parser = argparse.ArgumentParser(description="Replay lightUMI 9D/10D TCP actions in Piper TCP-relative mode")
     parser.add_argument("--data-dir", type=Path, default=Path(DEFAULT_DATA_DIR))
     parser.add_argument("--episode", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true", help="validate the episode without connecting to Piper")

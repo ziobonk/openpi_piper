@@ -79,7 +79,7 @@ git status --short
 git log -1 --oneline
 ```
 
-## lightUMI 9D 数据的 TCP-relative 回放
+## lightUMI 9D/10D 数据的 TCP-relative 回放
 
 `lightumi_20261009_212049` 是单路 30 Hz LeRobot 数据：`action` 为下一对齐帧的绝对 PICO World TCP `[xyz, rotation-6D]`，旋转 6D 按旋转矩阵前两列分组保存；没有夹爪动作或 TCP 状态。专用入口只读取 Parquet 的 action 列，不解码视频。它以第一个 action 为数据基准，以启动时实测 Piper TCP 为机器人基准，执行 `T_robot_start @ inv(T_action[0]) @ T_action[k]`。首个 action 只作基准，末尾重复 action 被丢弃，夹爪保持原状态。此模式从启动到结束只锚定一次，要求两端 TCP 原点与轴方向一致。
 
@@ -97,6 +97,16 @@ git log -1 --oneline
   --data-dir local/datasets/lightumi_20261009_212049 --episode 0 \
   --max-frames 3 --step --speed 0.25 --readback
 ```
+
+`local/datasets/pick_place` 的 action 是 10D：前 9 维是同样编码的绝对 TCP，最后一维 `gripper_angle_rad` 是下一帧源夹爪角度。此入口只回放 TCP，**忽略第 10 维且不控制 Piper 夹爪**；源角度没有对应 Piper 夹爪宽度的标定，不能直接当毫米命令。episode 3 离线检查得到 275 个有效位姿、274 个目标，最大相对位移约 303 mm，最大单步平移约 8.7 mm。对应命令如下，反斜杠后不能有空格：
+
+```bash
+uv run examples/piper/data_tools/replay_lightumi_tcp_relative.py \
+  --data-dir local/datasets/pick_place \
+  --episode 3 --speed 0.5 --readback --tcp-offset-m 0 0 0
+```
+
+这里的 `--tcp-offset-m 0 0 0` 将 J6 法兰原点当作 Piper TCP；如果数据对应爪尖，应改成实测的 J6 到爪尖偏移。首次真机试播可加 `--max-frames 3 --step`。
 
 每个目标帧下发完成后都会读取并保存 Piper SDK 反馈的法兰位姿经 TCP 偏移换算得到的实测 TCP，`--readback` 只控制终端是否打印追踪误差统计。回放结束或中途按 Ctrl+C 后，只要完成过至少一个目标帧，脚本会在 `local/runs/outputs/` 自动保存同名 `.npz` 和 `.gif`；可用 `--comparison-gif local/runs/outputs/my_trial.gif` 指定路径。GIF 的 XY、XZ、YZ 三个投影同时显示数据集与 Piper 的相对 TCP 轨迹，右下角显示相对位置误差随回放时间变化，标题显示当前帧的位置和姿态误差。绘图在机械臂运动结束后执行，不占用控制循环。
 
