@@ -55,10 +55,15 @@ uv run examples/piper/chunk_relative/compute_norm_stats.py \
   --dataset local/datasets/pick_place_chunk_relative \
   --config-name pi05_piper_pick_place_chunk_relative
 
+PIPER_PICK_PLACE_DATA_DIR=local/datasets/pick_place_chunk_relative \
 WANDB_DIR=local/runs/wandb XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
   uv run scripts/train.py pi05_piper_pick_place_chunk_relative \
   --exp-name=pick_place
 ```
+
+若服务器把数据放在 `data/pick_place_chunk_relative`，将上面命令中的
+`PIPER_PICK_PLACE_DATA_DIR` 设为该目录。代码默认路径仍是
+`local/datasets/pick_place_chunk_relative`。
 
 专用统计脚本只读 Parquet 的 `state/actions`，不解码视频；对所有有效的 50 帧窗口
 先作 chunk-relative 变换，再统计相对 TCP 和原始夹爪角度。结果位于
@@ -66,6 +71,17 @@ WANDB_DIR=local/runs/wandb XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
 `norm_stats.json` 和带数据集哈希的 `norm_stats_manifest.json`。训练检查点会带上统计副本。
 训练配置读取 `observation.images.global` 作为基座图像、
 `observation.images.camera` 作为腕部图像，使用原任务文本“把方块放到纸盒子里”。
+此配置固定使用 PyAV 解码训练视频。服务器的 TorchCodec 若因缺少 FFmpeg 动态库而
+无法加载，也不会影响这套数据的训练。服务器更新代码后，可先检查 PyAV 是否可用：
+
+```bash
+uv run python -c 'import av; print("PyAV", av.__version__)'
+```
+
+若 PyAV 未安装，先同步项目依赖（`uv sync`）；`av` 是锁定依赖中的 LeRobot 依赖。
+重试训练时无需重新计算归一化统计。若上一次运行已创建检查点目录，
+在训练命令末尾加 `--resume`；没有已保存步数时训练脚本会从头开始。
+`--overwrite` 会删除该目录及其中已有的检查点，只有明确要丢弃旧训练时才使用。
 
 ## 推理时映射夹爪
 

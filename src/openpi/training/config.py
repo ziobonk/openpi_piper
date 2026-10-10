@@ -71,6 +71,8 @@ class DataConfig:
     repo_id: str | None = None
     # Optional local directory to load the dataset from (bypasses HuggingFace).
     local_data_root: str | None = None
+    # LeRobot video decoder. None uses LeRobot's platform default.
+    video_backend: str | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -1285,8 +1287,8 @@ _CONFIGS = [
         data=LeRobotPiperChunkRelativeDataConfig(
             repo_id="pick_place_chunk_relative",
             assets=AssetsConfig(),
-            base_config=DataConfig(prompt_from_task=True),
-            local_data_dir="./local/datasets/pick_place_chunk_relative",
+            base_config=DataConfig(prompt_from_task=True, video_backend="pyav"),
+            local_data_dir=os.environ.get("PIPER_PICK_PLACE_DATA_DIR", "./local/datasets/pick_place_chunk_relative"),
             base_image_key="observation.images.global",
             wrist_image_key="observation.images.camera",
         ),
