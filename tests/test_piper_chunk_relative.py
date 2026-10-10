@@ -57,12 +57,29 @@ def test_clients_send_only_gripper_and_capture_each_chunk_base():
         client._camera = None
         client._default_prompt = "pick cube"
         client._interactive = False
+        client._model_gripper_range = None
         observation = client._build_observation()
         np.testing.assert_array_equal(observation["observation/state"], [11.0])
         np.testing.assert_allclose(client._chunk_tcp_base, tcp)
         robot_state[:6] += [0.1, 0, 0, 0, 0, 0]
         np.testing.assert_allclose(client._chunk_tcp_base, tcp)
         robot_state[:6] = tcp
+
+
+def test_chunk_relative_gripper_is_mapped_only_at_inference():
+    state = np.r_[[0.4, 0, 0.3, 0, 0, 0], 10.0]
+    for cls in (eef.PiperEEFInference, PiperEEFAsyncInference):
+        client = cls.__new__(cls)
+        client._model_action_frame = "chunk_relative"
+        client._robot = SimpleNamespace(get_state=lambda: state)
+        client._camera = None
+        client._default_prompt = "pick cube"
+        client._interactive = False
+        client._model_gripper_range = (0.1, 0.9)
+        client._gripper_open_width_mm = 20.0
+        observation = client._build_observation()
+        np.testing.assert_allclose(observation["observation/state"], [0.5])
+        np.testing.assert_allclose(client._model_gripper_to_runtime(0.5), 10.0)
 
 
 def test_async_buffered_absolute_target_uses_captured_base():

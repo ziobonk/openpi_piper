@@ -90,7 +90,7 @@ def load_chunk_relative_episode(data_dir: str, episode: int | None):
     info = json.loads((root / "meta/info.json").read_text())
     if info.get("robot_type") != "piper_chunk_relative_eef":
         raise ValueError("expected a piper_chunk_relative_eef dataset")
-    if info.get("pose_coordinate_frame") not in ("pico_world_tcp", "robot_base_tcp") or info.get("coordinate_transform_applied") is not False:
+    if info.get("pose_coordinate_frame") not in ("pico_world_tcp", "robot_base_tcp", "source_tracking_world_tcp") or info.get("coordinate_transform_applied") is not False:
         raise ValueError("expected untransformed absolute TCP actions in a supported frame")
     episodes = [json.loads(line) for line in (root / "meta/episodes.jsonl").read_text().splitlines() if line]
     lengths = {int(row["episode_index"]): int(row["length"]) for row in episodes}
@@ -185,6 +185,9 @@ def replay_chunk_relative(args) -> None:
         raise ValueError("chunk-relative data has no controller_to_tcp; match the physical TCP definitions")
     if args.action_horizon < 2 or not 1 <= args.exec_horizon < args.action_horizon:
         raise ValueError("require action_horizon >= 2 and 1 <= exec_horizon < action_horizon")
+    raw_gripper = info.get("gripper_mapping", {}).get("applied_to_dataset") is False
+    if raw_gripper and args.control_gripper:
+        raise ValueError("dataset gripper is an unmapped source angle; replay with TCP only")
     expected_width = float(info["gripper_mapping"]["robot_open_width_mm"])
     if args.gripper_open_width_mm is None:
         args.gripper_open_width_mm = expected_width
@@ -199,7 +202,7 @@ def replay_chunk_relative(args) -> None:
     pos, rot = _trajectory_steps(ideal)
     print(f"Ideal trajectory: max step {pos.max()*1000:.1f} mm, "
           f"{np.rad2deg(rot.max()):.2f} deg; gripper "
-          f"{actions[:,6].min():.1f}..{actions[:,6].max():.1f} mm")
+          f"{actions[:,6].min():.3f}..{actions[:,6].max():.3f} {'rad (not commanded)' if raw_gripper else 'mm'}")
     if args.dry_run:
         print("[DryRun] No robot connection or motion.")
         return

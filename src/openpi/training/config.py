@@ -489,13 +489,15 @@ class LeRobotPiperChunkRelativeDataConfig(DataConfigFactory):
     """Gripper-only state with each EEF action window relative to its first pose."""
 
     local_data_dir: str | None = None
+    base_image_key: str = "image"
+    wrist_image_key: str = "wrist_image"
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         repack_transform = _transforms.Group(
             inputs=[_transforms.RepackTransform({
-                "observation/image": "image",
-                "observation/wrist_image": "wrist_image",
+                "observation/image": self.base_image_key,
+                "observation/wrist_image": self.wrist_image_key,
                 "observation/state": "state",
                 "actions": "actions",
                 "prompt": "prompt",
@@ -1256,6 +1258,37 @@ _CONFIGS = [
             assets=AssetsConfig(),
             base_config=DataConfig(prompt_from_task=True),
             local_data_dir="./local/datasets/pick_cube_0928_chunk_relative",
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        batch_size=8,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-4,
+            decay_steps=50_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        num_train_steps=30_000,
+        save_interval=2000,
+        keep_period=10000,
+    ),
+    # lightUMI pick_place: same-frame TCP after preparation; gripper stays in source radians.
+    TrainConfig(
+        name="pi05_piper_pick_place_chunk_relative",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=50,
+            discrete_state_input=False,
+        ),
+        data=LeRobotPiperChunkRelativeDataConfig(
+            repo_id="pick_place_chunk_relative",
+            assets=AssetsConfig(),
+            base_config=DataConfig(prompt_from_task=True),
+            local_data_dir="./local/datasets/pick_place_chunk_relative",
+            base_image_key="observation.images.global",
+            wrist_image_key="observation.images.camera",
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         batch_size=8,

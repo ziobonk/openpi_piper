@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Compute valid-window pi05 statistics for pick_cube_0928_chunk_relative.
+"""Compute valid-window pi05 statistics for a Piper chunk-relative dataset.
 
 Only the state/actions Parquet columns are read; camera images are not decoded.
 """
 
+import argparse
 import hashlib
 import json
 from pathlib import Path
@@ -17,11 +18,9 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "src"))
 from openpi.shared import normalize  # noqa: E402
 
-CONFIG_NAME = "pi05_piper_pick_cube_0928_chunk_relative"
-DATASET = ROOT / "local" / "datasets" / "pick_cube_0928_chunk_relative"
 HORIZON = 50
 # Keep the pooled quantile scale well-defined for almost-static dimensions.
-MIN_Q_RANGE = np.array([0.001] * 3 + [0.01] * 3 + [0.1], dtype=np.float64)
+MIN_TCP_Q_RANGE = [0.001] * 3 + [0.01] * 3
 
 
 def _stabilize(stats: normalize.NormStats, minimum: np.ndarray) -> normalize.NormStats:
@@ -39,25 +38,41 @@ def _stabilize(stats: normalize.NormStats, minimum: np.ndarray) -> normalize.Nor
 
 
 def main() -> None:
-    info_path = DATASET / "meta/info.json"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--dataset", type=Path, default=ROOT / "local/datasets/pick_cube_0928_chunk_relative")
+    parser.add_argument("--config-name", default="pi05_piper_pick_cube_0928_chunk_relative")
+    args = parser.parse_args()
+    dataset = args.dataset.resolve()
+    info_path = dataset / "meta/info.json"
     info_bytes = info_path.read_bytes()
     info = json.loads(info_bytes)
-    expected = {
-        "robot_type": "piper_chunk_relative_eef",
-        "pose_coordinate_frame": "pico_world_tcp",
-        "coordinate_transform_applied": False,
-        "fps": 20.0,
-    }
+    expected = {"robot_type": "piper_chunk_relative_eef", "coordinate_transform_applied": False}
     for key, value in expected.items():
         if info.get(key) != value:
             raise ValueError(f"{key}: expected {value!r}, got {info.get(key)!r}")
+    if info.get("pose_coordinate_frame") not in {"pico_world_tcp", "source_tracking_world_tcp", "robot_base_tcp"}:
+        raise ValueError("unsupported absolute TCP coordinate frame")
+    if not np.isfinite(info.get("fps", np.nan)) or info["fps"] <= 0:
+        raise ValueError("dataset FPS must be positive")
     for key, shape in (("state", [1]), ("actions", [7])):
         if info["features"][key]["shape"] != shape:
             raise ValueError(f"{key} must have shape {shape}")
-    if info.get("gripper_mapping", {}).get("robot_open_width_mm") != 20.0:
-        raise ValueError("dataset must map gripper width to 0..20 mm")
+    gripper_mapping = info.get("gripper_mapping", {})
+    if gripper_mapping.get("applied_to_dataset") is False:
+        if (
+            gripper_mapping.get("source_unit") != "rad"
+            or gripper_mapping.get("larger_angle_means_open") is not True
+            or gripper_mapping.get("source_open_rad", 0) <= gripper_mapping.get("source_closed_rad", 0)
+        ):
+            raise ValueError("invalid unmapped source gripper angle metadata")
+        gripper_q_range = 0.01
+    else:
+        if gripper_mapping.get("robot_open_width_mm") != 20.0:
+            raise ValueError("dataset must use a 0..20 mm gripper width")
+        gripper_q_range = 0.1
+    min_q_range = np.array([*MIN_TCP_Q_RANGE, gripper_q_range], dtype=np.float64)
 
-    files = sorted((DATASET / "data").rglob("*.parquet"))
+    files = sorted((dataset / "data").rglob("*.parquet"))
     if len(files) != info["total_episodes"]:
         raise ValueError(f"expected {info['total_episodes']} episode Parquet files, got {len(files)}")
 
@@ -93,23 +108,23 @@ def main() -> None:
 
     if frame_count != info["total_frames"]:
         raise ValueError(f"frame count mismatch: {frame_count} != {info['total_frames']}")
-    output = ROOT / "assets" / CONFIG_NAME / DATASET.name
+    output = ROOT / "assets" / args.config_name / dataset.name
     stats = {
-        "state": _stabilize(state_stats.get_statistics(), MIN_Q_RANGE[6:]),
-        "actions": _stabilize(action_stats.get_statistics(), MIN_Q_RANGE),
+        "state": _stabilize(state_stats.get_statistics(), min_q_range[6:]),
+        "actions": _stabilize(action_stats.get_statistics(), min_q_range),
     }
     normalize.save(output, stats)
     (output / "norm_stats_manifest.json").write_text(json.dumps({
         "schema": "piper.chunk_relative_norm.v1",
-        "dataset": DATASET.name,
-        "config": CONFIG_NAME,
+        "dataset": dataset.name,
+        "config": args.config_name,
         "dataset_info_sha256": hashlib.sha256(info_bytes).hexdigest(),
         "horizon": HORIZON,
         "frame_count": frame_count,
         "valid_action_rows": valid_actions,
         "action_reference": "first_action_in_chunk",
         "padded_action_rows_included": False,
-        "min_quantile_range": MIN_Q_RANGE.tolist(),
+        "min_quantile_range": min_q_range.tolist(),
     }, indent=2) + "\n")
     print(f"Wrote {output / 'norm_stats.json'} ({valid_actions} valid action rows)")
 

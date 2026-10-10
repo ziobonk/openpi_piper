@@ -151,7 +151,7 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
         print(f"模式:           {self._mode}")
         print(f"服务器:         {self._policy_host}:{self._policy_port}")
         print(f"模型动作坐标系: {self._model_action_frame.upper()}")
-        print(f"控制频率:       {eef.CONTROL_FREQ} Hz")
+        print(f"控制频率:       {self._control_freq:g} Hz")
         print(f"推理频率上限:   {self._inference_rate:g} Hz")
         print(f"动作块上限:     {min(self._action_horizon, self._exec_horizon)} 步")
         if self._use_interp:
@@ -225,7 +225,7 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
             if self._rtc_delays:
                 request["inference_delay"] = min(
                     self._action_horizon - 1,
-                    max(0, round(float(np.median(self._rtc_delays)) * eef.CONTROL_FREQ)),
+                    max(0, round(float(np.median(self._rtc_delays)) * self._control_freq)),
                 )
         return request
 
@@ -472,7 +472,7 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
         state = self._robot.get_state().copy()
         if self._model_action_frame == "chunk_relative":
             self._chunk_tcp_base = state[:6].astype(np.float64).copy()
-            state = state[6:7]
+            state = np.array([self._runtime_gripper_to_model(float(state[6]))], dtype=np.float32)
         elif self._model_action_frame != "robot_absolute":
             if self._robot_tcp0 is None:
                 raise RuntimeError("episode robot TCP reference is not initialized")
@@ -506,6 +506,10 @@ def main(args=None, *, mode: str = "temporal_smoothing"):
     if args.dataset:
         eef.main(args)
         return
+    if args.tcp_offset_m is not None:
+        if not np.isfinite(args.tcp_offset_m).all() or np.linalg.norm(args.tcp_offset_m) > 1.0:
+            parser.error("--tcp_offset_m must be finite and at most 1 metre")
+        eef.GRIPPER_TCP_OFFSET_M[:] = args.tcp_offset_m
     if args.action_horizon < 1 or args.exec_horizon < 1 or args.max_pos_speed <= 0 or args.max_rot_speed <= 0:
         parser.error("--action_horizon / --exec_horizon 和最大 EEF 速度必须大于 0")
     if args.inference_rate <= 0 or args.latency_k < 0 or args.min_smooth_steps < 1:
@@ -516,8 +520,10 @@ def main(args=None, *, mode: str = "temporal_smoothing"):
     if args.model_action_frame in {"pico", "pico_absolute", "tcp_absolute"} and args.legacy_pick_cube_tcp:
         parser.error("PICO 模式不能与 --legacy_pick_cube_tcp 同时使用")
     pico_reference_pose = None
-    model_gripper_range = None
+    model_gripper_range = tuple(args.model_gripper_range) if args.model_gripper_range is not None else None
     if args.model_action_frame in {"pico_absolute", "tcp_absolute"}:
+        if args.model_gripper_range is not None:
+            parser.error("absolute pose mode derives its gripper range from --absolute_pose_dataset")
         pico_reference_pose, model_gripper_range = eef._load_raw_pico_reference(
             args.raw_pico_dataset, args.raw_pico_episode,
             pose_frame="pico_world_tcp" if args.model_action_frame == "tcp_absolute" else "pico_teleop",
@@ -563,6 +569,7 @@ def main(args=None, *, mode: str = "temporal_smoothing"):
         legacy_pick_cube_tcp=args.legacy_pick_cube_tcp,
         pico_reference_pose=pico_reference_pose,
         model_gripper_range=model_gripper_range,
+        control_freq=args.control_freq,
         inference_rate=args.inference_rate,
         latency_k=args.latency_k,
         min_smooth_steps=args.min_smooth_steps,

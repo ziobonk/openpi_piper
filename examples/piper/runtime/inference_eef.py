@@ -850,6 +850,7 @@ class PiperEEFInference:
         pico_reference_pose: Optional[np.ndarray] = None,
         model_gripper_range: Optional[tuple[float, float]] = None,
         trajectory_log: Optional[str] = None,
+        control_freq: float = CONTROL_FREQ,
     ):
         self._action_horizon = action_horizon
         self._exec_horizon = exec_horizon
@@ -875,11 +876,20 @@ class PiperEEFInference:
                 raise ValueError("绝对位姿模式需要 6 维初始位姿")
             if model_gripper_range is None or model_gripper_range[1] <= model_gripper_range[0]:
                 raise ValueError("绝对位姿模式需要有效的训练数据夹爪范围")
+        if model_gripper_range is not None and (
+            len(model_gripper_range) != 2
+            or not np.isfinite(model_gripper_range).all()
+            or model_gripper_range[1] <= model_gripper_range[0]
+        ):
+            raise ValueError("model_gripper_range must be finite CLOSED < OPEN")
         self._model_gripper_range = model_gripper_range
         self._trajectory_recorder = (
             None if trajectory_log is None else _RealRobotTrajectoryRecorder(trajectory_log)
         )
-        self._period = 1.0 / CONTROL_FREQ
+        if not np.isfinite(control_freq) or control_freq <= 0:
+            raise ValueError("control_freq must be positive and finite")
+        self._control_freq = float(control_freq)
+        self._period = 1.0 / self._control_freq
         self._gripper_open_width_mm = float(gripper_open_width_mm)
         self._gripper_binary_threshold_mm = (
             GRIPPER_BINARY_THRESHOLD_MM
@@ -998,7 +1008,7 @@ class PiperEEFInference:
             + (str(self._trajectory_recorder.path) if self._trajectory_recorder is not None else "关闭")
         )
         print(
-            f"控制频率:       {CONTROL_FREQ} Hz "
+            f"控制频率:       {self._control_freq:g} Hz "
             f"(期望动作块 {self._action_horizon} 步, 每块最多执行 {self._exec_horizon} 步)"
         )
         print(f"夹爪预测缩放:   pred × {self._gripper_prediction_scale:g}")
@@ -1073,7 +1083,7 @@ class PiperEEFInference:
     def _control_loop(self):
         fps_counter = _FPSCounter("control")
         cur_pose: Optional[np.ndarray] = None
-        data_dt = 1.0 / CONTROL_FREQ
+        data_dt = self._period
 
         while self._running:
             loop_start = time.monotonic()
@@ -1296,7 +1306,7 @@ class PiperEEFInference:
         state = self._robot.get_state().copy()  # Robot Base TCP pose + gripper
         if self._model_action_frame == "chunk_relative":
             self._chunk_tcp_base = state[:6].astype(np.float64).copy()
-            state = state[6:7]
+            state = np.array([self._runtime_gripper_to_model(float(state[6]))], dtype=np.float32)
         elif self._model_action_frame != "robot_absolute":
             if self._robot_tcp0 is None:
                 raise RuntimeError("episode robot TCP reference is not initialized")
@@ -1952,6 +1962,15 @@ def _parse_args(parser=None, argv=None):
         help=f"夹爪全开命令 mm (默认: {GRIPPER_OPEN_WIDTH_MM}；0 对应全闭)",
     )
     p.add_argument(
+        "--model_gripper_range", type=float, nargs=2, default=None, metavar=("CLOSED", "OPEN"),
+        help="训练数据夹爪原始值的闭/开端点；推理时双向映射到 Piper 夹爪宽度",
+    )
+    p.add_argument("--control_freq", type=float, default=CONTROL_FREQ, help="真机动作频率 Hz；应与训练数据 FPS 一致")
+    p.add_argument(
+        "--tcp_offset_m", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"),
+        help="本次推理的 J6 法兰到 TCP 平移，单位米；默认使用运行时常量",
+    )
+    p.add_argument(
         "--gripper_binary_threshold_mm",
         type=float,
         default=None,
@@ -2026,6 +2045,11 @@ def main(args=None):
     if args is None:
         args = _parse_args()
 
+    if args.tcp_offset_m is not None:
+        if not np.isfinite(args.tcp_offset_m).all() or np.linalg.norm(args.tcp_offset_m) > 1.0:
+            raise ValueError("tcp_offset_m must be finite and at most 1 metre")
+        GRIPPER_TCP_OFFSET_M[:] = args.tcp_offset_m
+
     if args.model_action_frame in {"chunk_relative", "pico", "pico_absolute", "tcp_absolute"} and args.legacy_pick_cube_tcp:
         print("[ERROR] PICO 模式与 --legacy_pick_cube_tcp 不能同时启用")
         return
@@ -2078,12 +2102,14 @@ def main(args=None):
         return
 
     pico_reference_pose = None
-    model_gripper_range = None
+    model_gripper_range = tuple(args.model_gripper_range) if args.model_gripper_range is not None else None
     if args.model_action_frame in {"pico_absolute", "tcp_absolute"}:
         pico_reference_pose, model_gripper_range = _load_raw_pico_reference(
             args.raw_pico_dataset, args.raw_pico_episode,
             pose_frame="pico_world_tcp" if args.model_action_frame == "tcp_absolute" else "pico_teleop",
         )
+        if args.model_gripper_range is not None:
+            raise ValueError("absolute pose mode derives its gripper range from --absolute_pose_dataset")
         print(f"[Pose] 参考 episode {args.raw_pico_episode} 首帧位姿: {pico_reference_pose}")
         print(f"[Pose] 训练夹爪范围: {model_gripper_range} -> 机器人 0..{args.gripper_open_width_mm:g} mm")
 
@@ -2128,6 +2154,7 @@ def main(args=None):
         pico_reference_pose=pico_reference_pose,
         model_gripper_range=model_gripper_range,
         trajectory_log=args.trajectory_log,
+        control_freq=args.control_freq,
     )
     inference.run()
 

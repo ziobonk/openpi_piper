@@ -1,5 +1,7 @@
 # `pick_cube_0928_chunk_relative`：数据、训练与推理全流程
 
+`pick_place` 的 30 Hz lightUMI 数据准备和服务器训练使用 [PICK_PLACE_TRAINING.md](PICK_PLACE_TRAINING.md)。
+
 本文对应训练配置 `pi05_piper_pick_cube_0928_chunk_relative` 和目录
 `local/datasets/pick_cube_0928_chunk_relative`。命令从工程根目录执行。核心约定是：
 **磁盘上保存同帧、绝对的 PICO World TCP 位姿；训练时对每个采样窗口单独转成相对首步的动作；真机推理时以当前 Piper TCP 为基座恢复目标。**
