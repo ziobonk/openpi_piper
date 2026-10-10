@@ -93,3 +93,10 @@ def test_next_frame_tcp_becomes_same_frame_and_gripper_stays_radians(tmp_path, m
     np.testing.assert_allclose(captured[0].model_gripper_range, [0.1, 0.3])
     assert captured[0].gripper_open_width_mm == 20
     assert captured[0].prompt == "把方块放到纸盒子里"
+
+    new_prompt = "<control mode> end effector <control mode>pick up the yellow cube then drop it into the box."
+    retagged = tmp_path / "retagged"
+    convert(source, retagged, task=new_prompt)
+    assert json.loads((retagged / "meta/tasks.jsonl").read_text())["task"] == new_prompt
+    assert json.loads((retagged / "meta/episodes.jsonl").read_text())["tasks"] == [new_prompt]
+    assert infer_pick_place.training_metadata(retagged)[-1] == new_prompt

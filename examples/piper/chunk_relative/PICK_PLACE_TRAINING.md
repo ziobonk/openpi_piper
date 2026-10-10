@@ -12,7 +12,8 @@
 ```bash
 uv run examples/piper/chunk_relative/prepare_lightumi_chunk_relative.py \
   --source local/datasets/pick_place \
-  --output local/datasets/pick_place_chunk_relative
+  --output local/datasets/pick_place_chunk_relative \
+  --task '<control mode> end effector <control mode>pick up the yellow cube then drop it into the box.'
 ```
 
 转换器为每帧写入 `state=[当前编码器角度(rad)]` 和
@@ -27,6 +28,9 @@ TCP，用第一条可用 TCP 填补，此事实写入 `meta/info.json`。训练�
 `0.012217..0.792379 rad`，建议分别作为闭合、张开端点，对应 Piper 的 `0..20 mm`。
 这是从观测范围推定的端点；若实际夹爪未覆盖完整行程，推理前应按实测标定修正。
 `meta/stats.json` 记录磁盘上的原始绝对动作和角度，**不是模型归一化统计**。
+准备后数据集的单一任务文本已设为
+`<control mode> end effector <control mode>pick up the yellow cube then drop it into the box.`，
+记录在 `meta/tasks.jsonl` 和 50 条 `meta/episodes.jsonl` 中；源数据集的任务文本保留原样。
 
 本地可检查产物的一集，不连接机械臂：
 
@@ -70,7 +74,10 @@ WANDB_DIR=local/runs/wandb XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
 `assets/pi05_piper_pick_place_chunk_relative/pick_place_chunk_relative/`，包含
 `norm_stats.json` 和带数据集哈希的 `norm_stats_manifest.json`。训练检查点会带上统计副本。
 训练配置读取 `observation.images.global` 作为基座图像、
-`observation.images.camera` 作为腕部图像，使用原任务文本“把方块放到纸盒子里”。
+`observation.images.camera` 作为腕部图像，使用上面的英文任务文本。
+若服务器此前已收到旧版本数据，只需同步更新后的 `meta/tasks.jsonl` 和
+`meta/episodes.jsonl`，重启训练进程让 LeRobot 重新读取任务文本。
+任务文本不参与数值归一化统计，无需重新计算 `norm_stats.json`。
 此配置固定使用 PyAV 解码训练视频。服务器的 TorchCodec 若因缺少 FFmpeg 动态库而
 无法加载，也不会影响这套数据的训练。服务器更新代码后，可先检查 PyAV 是否可用：
 

@@ -39,7 +39,7 @@ def _load_rows(path: Path) -> dict[int, dict]:
     return {int(row["episode_index"]): row for row in map(json.loads, path.read_text().splitlines())}
 
 
-def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0) -> None:
+def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0, task: str | None = None) -> None:
     source, output = source.resolve(), output.resolve()
     if output.exists():
         raise FileExistsError(f"output already exists: {output}")
@@ -47,6 +47,8 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0) ->
         raise ValueError("source and output must be separate directories")
     if not np.isfinite(robot_open_width_mm) or robot_open_width_mm <= 0:
         raise ValueError("robot_open_width_mm must be positive and finite")
+    if task is not None and not task.strip():
+        raise ValueError("task must not be empty")
 
     info = json.loads((source / "meta/info.json").read_text())
     features = info.get("features", {})
@@ -71,6 +73,10 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0) ->
     episode_stats = _load_rows(source / "meta/episodes_stats.jsonl")
     if len(episodes) != info["total_episodes"] or episodes.keys() != sources.keys() or episodes.keys() != episode_stats.keys():
         raise ValueError("episode metadata indices disagree")
+    if task is not None:
+        tasks = [json.loads(line) for line in (source / "meta/tasks.jsonl").read_text().splitlines()]
+        if len(tasks) != 1 or tasks[0]["task_index"] != 0 or any(row.get("task_index", 0) != 0 for row in episodes.values()):
+            raise ValueError("task override requires a single-task dataset")
 
     source_stats = json.loads((source / "meta/stats.json").read_text())
     all_states, all_actions = [], []
@@ -78,6 +84,11 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0) ->
     staging = Path(tempfile.mkdtemp(prefix=f".{output.name}.staging-", dir=output.parent))
     try:
         shutil.copytree(source / "meta", staging / "meta")
+        if task is not None:
+            (staging / "meta/tasks.jsonl").write_text(json.dumps({"task_index": 0, "task": task}) + "\n")
+            with (staging / "meta/episodes.jsonl").open("w") as stream:
+                for episode in sorted(episodes):
+                    stream.write(json.dumps({**episodes[episode], "tasks": [task]}, ensure_ascii=False) + "\n")
         if (source / "videos").exists():
             shutil.copytree(source / "videos", staging / "videos", copy_function=_link_or_copy)
         if len(list((staging / "videos").rglob("*.mp4"))) != int(info.get("total_videos", 0)):
@@ -172,8 +183,9 @@ def main() -> None:
     parser.add_argument("--source", type=Path, default=Path("local/datasets/pick_place"))
     parser.add_argument("--output", type=Path, default=Path("local/datasets/pick_place_chunk_relative"))
     parser.add_argument("--robot-open-width-mm", type=float, default=20.0)
+    parser.add_argument("--task", help="replace the single dataset task prompt in task and episode metadata")
     args = parser.parse_args()
-    convert(args.source, args.output, robot_open_width_mm=args.robot_open_width_mm)
+    convert(args.source, args.output, robot_open_width_mm=args.robot_open_width_mm, task=args.task)
 
 
 if __name__ == "__main__":
