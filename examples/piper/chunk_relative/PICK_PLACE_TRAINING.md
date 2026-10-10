@@ -110,6 +110,9 @@ uv run examples/piper/chunk_relative/infer_pick_place.py \
 ```
 
 机器人端需能读取准备后数据集的 `meta/info.json` 和 `meta/tasks.jsonl`。
+推理提示词读取自 `meta/tasks.jsonl` 的 `task` 字段；应与训练该检查点时使用的任务文本一致。
+基座 RealSense 采集分辨率读取自 `meta/info.json` 的 `observation.images.global.shape`，
+当前数据集为 640×480。
 此入口使用 DM 夹爪：`0 rad` 为关、`-10 rad` 为开，速度上限设为 `10 rad/s`；
 串口按设备实际位置调整。运行时先把 DM 位置按 `0..20 mm` 的虚拟开度换算为
 模型状态的源编码器角度，再把模型预测的源角度换算为 DM 目标位置。

@@ -36,6 +36,14 @@ def training_metadata(dataset: Path) -> tuple[float, tuple[float, float], float,
     return fps, (closed, opened), open_width_mm, tasks[0]
 
 
+def base_camera_size(dataset: Path) -> tuple[int, int]:
+    info = json.loads((dataset / "meta/info.json").read_text())
+    shape = info.get("features", {}).get("observation.images.global", {}).get("shape")
+    if not isinstance(shape, list) or len(shape) != 3 or any(not isinstance(v, int) or v <= 0 for v in shape):
+        raise ValueError("dataset must declare a valid base camera image shape")
+    return shape[1], shape[0]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=Path("local/datasets/pick_place_chunk_relative"))
@@ -54,6 +62,7 @@ def main() -> None:
     if not inference_eef._HAS_DM_GRIPPER:
         parser.error("DM gripper driver is unavailable")
     fps, (closed, opened), open_width_mm, prompt = training_metadata(args.dataset)
+    base_width, base_height = base_camera_size(args.dataset)
     runtime_argv = [
         "--host", args.host,
         "--port", str(args.port),
@@ -68,6 +77,7 @@ def main() -> None:
         "--gripper_close_rad", "0",
         "--gripper_speed", "10",
         "--control_freq", str(fps),
+        "--base_rs_size", str(base_width), str(base_height),
         "--prompt", prompt,
     ]
     if args.tcp_offset_m is not None:

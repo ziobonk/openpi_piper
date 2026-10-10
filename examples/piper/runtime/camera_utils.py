@@ -413,6 +413,7 @@ def create_cameras(
     wrist_cv_id: Optional[int] = None,
     third_cv_id: Optional[int] = None,
     wrist_cv_exposure: Optional[float] = None,
+    base_rs_size: Optional[tuple[int, int]] = None,
 ):
     """创建一个统一接口的相机对象。
 
@@ -421,6 +422,7 @@ def create_cameras(
 
     Args:
         base_serial: D435i 基座相机序列号。
+        base_rs_size: RealSense 采集分辨率 (宽, 高)；默认 640x480。
         wrist_serial: D405 左腕相机序列号。
         third_serial: D405 右腕相机序列号。
         base_cv_id: OpenCV 基座相机设备 ID。
@@ -441,8 +443,11 @@ def create_cameras(
         if not HAS_RS2:
             print("[Camera] pyrealsense2 未安装，RealSense 相机槽位将不可用")
         else:
+            width, height = base_rs_size or (CAPTURE_WIDTH, CAPTURE_HEIGHT)
+            if width <= 0 or height <= 0:
+                raise ValueError("RealSense capture size must be positive")
             rs_cam = RealSenseCameras(base_serial=base_serial, wrist_serial=wrist_serial,
-                                      third_serial=third_serial)
+                                      third_serial=third_serial, width=width, height=height)
 
     cv_cam = None
     if cv_requested:

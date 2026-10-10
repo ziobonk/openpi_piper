@@ -108,6 +108,25 @@ def test_dm_gripper_maps_width_to_negative_open_angle(monkeypatch):
         eef.DmGripperController(open_rad=0.0, close_rad=0.0)
 
 
+def test_eef_camera_creation_accepts_dataset_resolution_without_hardware(monkeypatch):
+    captured = []
+
+    def fake_realsense(**kwargs):
+        captured.append(kwargs)
+        return SimpleNamespace()
+
+    camera_module = sys.modules[eef.create_cameras.__module__]
+    monkeypatch.setattr(camera_module, "HAS_RS2", True)
+    monkeypatch.setattr(camera_module, "RealSenseCameras", fake_realsense)
+    monkeypatch.setattr(eef, "PiperEEFController", lambda *args, **kwargs: SimpleNamespace())
+    inference = eef.PiperEEFInference(
+        gripper_port=None, rs2_base_serial="camera-serial", base_rs_size=(640, 480)
+    )
+    assert inference._camera is not None
+    assert captured[0]["width"] == 640
+    assert captured[0]["height"] == 480
+
+
 def test_async_buffered_absolute_target_uses_captured_base():
     tcp = np.array([0.4, 0.0, 0.3, 0.0, 0.2, 0.1])
     local = np.array([0.02, 0.01, 0, 0, 0, 0.2])

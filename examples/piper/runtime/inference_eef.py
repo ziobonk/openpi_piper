@@ -857,6 +857,7 @@ class PiperEEFInference:
         model_gripper_range: Optional[tuple[float, float]] = None,
         trajectory_log: Optional[str] = None,
         control_freq: float = CONTROL_FREQ,
+        base_rs_size: tuple[int, int] = (1280, 720),
     ):
         self._action_horizon = action_horizon
         self._exec_horizon = exec_horizon
@@ -943,7 +944,7 @@ class PiperEEFInference:
         # 相机: 基座 = RealSense (D435i)，腕部 = USB 摄像头 (OpenCV)
         self._camera = create_cameras(
             base_serial=rs2_base_serial,
-            base_rs_size=(1280, 720),  # 与 pick_cube 数据集的 base 图像分辨率一致
+            base_rs_size=base_rs_size,
             base_cv_id=cv_base_id,
             wrist_cv_id=cv_wrist_id,
             wrist_cv_exposure=wrist_exposure,
@@ -1984,6 +1985,10 @@ def _parse_args(parser=None, argv=None):
         help="本次推理的 J6 法兰到 TCP 平移，单位米；默认使用运行时常量",
     )
     p.add_argument(
+        "--base_rs_size", type=int, nargs=2, default=(1280, 720), metavar=("WIDTH", "HEIGHT"),
+        help="基座 RealSense 采集分辨率；应与训练数据一致",
+    )
+    p.add_argument(
         "--gripper_binary_threshold_mm",
         type=float,
         default=None,
@@ -2131,6 +2136,7 @@ def main(args=None):
         port=args.port,
         can_name=args.can_name,
         rs2_base_serial=args.rs2_base,
+        base_rs_size=tuple(args.base_rs_size),
         cv_base_id=args.cam_ids[0] if len(args.cam_ids) > 0 else None,
         cv_wrist_id=args.usb_wrist
         if args.usb_wrist is not None

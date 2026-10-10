@@ -35,6 +35,7 @@ def test_next_frame_tcp_becomes_same_frame_and_gripper_stays_radians(tmp_path, m
         "features": {
             "action": {"shape": [10], "names": ["left_tcp_x_m", "left_tcp_y_m", "left_tcp_z_m", *ROTATION_NAMES, "gripper_angle_rad"]},
             "observation.state": {"shape": [1], "names": ["encoder_angle_rad"]},
+            "observation.images.global": {"shape": [480, 640, 3]},
         },
         "lightumi_conversion": {
             "action": "next aligned absolute source-tracking-world TCP xyz + rotation-6D, then next encoder angle in radians",
@@ -96,6 +97,7 @@ def test_next_frame_tcp_becomes_same_frame_and_gripper_stays_radians(tmp_path, m
     assert captured[0].gripper_close_rad == 0
     assert captured[0].gripper_speed == 10
     assert captured[0].gripper_port == infer_pick_place.inference_eef.GRIPPER_PORT
+    assert tuple(captured[0].base_rs_size) == (640, 480)
     assert captured[0].prompt == "把方块放到纸盒子里"
 
     new_prompt = "<control mode> end effector <control mode>pick up the yellow cube then drop it into the box."

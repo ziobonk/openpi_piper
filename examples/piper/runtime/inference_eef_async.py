@@ -534,6 +534,7 @@ def main(args=None, *, mode: str = "temporal_smoothing"):
         port=args.port,
         can_name=args.can_name,
         rs2_base_serial=args.rs2_base,
+        base_rs_size=tuple(args.base_rs_size),
         cv_base_id=args.cam_ids[0] if args.cam_ids else None,
         cv_wrist_id=args.usb_wrist
         if args.usb_wrist is not None
