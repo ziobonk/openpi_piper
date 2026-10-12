@@ -60,6 +60,10 @@ def main() -> None:
         "--visualize-trajectory", action=argparse.BooleanOptionalAction, default=True,
         help="show upcoming TCP targets in Robot Base during inference (default: on)",
     )
+    parser.add_argument(
+        "--trajectory-view", choices=("3d", "2d"), default="3d",
+        help="interactive 3D window (default) or XY/XZ/YZ projections",
+    )
     args = parser.parse_args()
     if not 1 <= args.steps <= 49 or not 1 <= args.port <= 65535:
         parser.error("steps must be 1..49 and port 1..65535")
@@ -89,7 +93,7 @@ def main() -> None:
     if args.tcp_offset_m is not None:
         runtime_argv.extend(("--tcp_offset_m", *(str(value) for value in args.tcp_offset_m)))
     if args.visualize_trajectory:
-        runtime_argv.append("--visualize_trajectory")
+        runtime_argv.extend(("--visualize_trajectory", "--trajectory_view", args.trajectory_view))
     print(f"[pick_place] encoder {closed:.6f}..{opened:.6f} rad -> Piper 0..{open_width_mm:g} mm at inference")
     inference_eef.main(inference_eef._parse_args(argv=runtime_argv))  # noqa: SLF001
 

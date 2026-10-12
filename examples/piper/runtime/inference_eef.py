@@ -131,7 +131,7 @@ except ImportError:
 
 # --- 相机工具 (支持 RealSense D435i/D405 和 OpenCV) ---
 from camera_utils import create_cameras
-from live_trajectory_view import LiveTrajectoryView
+from live_trajectory_view import LiveTrajectory3DView, LiveTrajectoryView
 
 from examples.piper.transforms.inference_action_transform import pico_relative_actions_to_tcp_relative
 from examples.piper.transforms.inference_action_transform import tcp_relative_actions_to_pico_relative
@@ -860,6 +860,7 @@ class PiperEEFInference:
         control_freq: float = CONTROL_FREQ,
         base_rs_size: tuple[int, int] = (1280, 720),
         visualize_trajectory: bool = False,
+        trajectory_view: str = "3d",
     ):
         self._action_horizon = action_horizon
         self._exec_horizon = exec_horizon
@@ -874,7 +875,13 @@ class PiperEEFInference:
         self._model_action_frame = model_action_frame
         if visualize_trajectory and model_action_frame != "chunk_relative":
             raise ValueError("live trajectory visualization currently requires chunk_relative actions")
-        self._trajectory_view = LiveTrajectoryView() if visualize_trajectory else None
+        if trajectory_view not in {"3d", "2d"}:
+            raise ValueError("trajectory_view must be '3d' or '2d'")
+        self._trajectory_view = (
+            (LiveTrajectory3DView() if trajectory_view == "3d" else LiveTrajectoryView())
+            if visualize_trajectory else None
+        )
+        self._trajectory_view_mode = trajectory_view
         self._legacy_pick_cube_tcp = bool(legacy_pick_cube_tcp)
         if self._model_action_frame in {"chunk_relative", "pico", "pico_absolute", "tcp_absolute"} and self._legacy_pick_cube_tcp:
             raise ValueError(
@@ -1020,7 +1027,10 @@ class PiperEEFInference:
             "轨迹记录:       "
             + (str(self._trajectory_recorder.path) if self._trajectory_recorder is not None else "关闭")
         )
-        print(f"即将执行的 TCP 轨迹窗口: {'开启' if self._trajectory_view is not None else '关闭'}")
+        print(
+            "即将执行的 TCP 轨迹窗口: "
+            + (self._trajectory_view_mode.upper() if self._trajectory_view is not None else "关闭")
+        )
         print(
             f"控制频率:       {self._control_freq:g} Hz "
             f"(期望动作块 {self._action_horizon} 步, 每块最多执行 {self._exec_horizon} 步)"
@@ -1045,29 +1055,34 @@ class PiperEEFInference:
         # 1. 使能机械臂
         if not self._robot.enable():
             return
-
-        # 2. 启动相机
-        if self._camera:
-            self._camera.start()
-            print("[Camera] 已启动")
-
-        # 3. 连接策略服务器
-        self._connect_policy()
-
-        self._running = True
-
-        # 4. 键盘监听
-        input_thread = threading.Thread(target=self._keyboard_listener, daemon=True)
-        input_thread.start()
-
+        camera_started = False
         try:
+            if self._trajectory_view is not None:
+                self._trajectory_view.start()
+
+            # 2. 启动相机
+            if self._camera:
+                self._camera.start()
+                camera_started = True
+                print("[Camera] 已启动")
+
+            # 3. 连接策略服务器
+            self._connect_policy()
+
+            self._running = True
+
+            # 4. 键盘监听
+            input_thread = threading.Thread(target=self._keyboard_listener, daemon=True)
+            input_thread.start()
             self._control_loop()
         except KeyboardInterrupt:
             print("\n[INFO] 中断信号，退出中...")
         finally:
             self._save_trajectory_log()
-            if self._camera:
+            if camera_started:
                 self._camera.stop()
+            if self._trajectory_view is not None:
+                self._trajectory_view.close()
             cv2.destroyAllWindows()
             print("[INFO] 已退出 (机械臂和夹爪保持使能)")
 
@@ -1275,8 +1290,7 @@ class PiperEEFInference:
     def _display_trajectory(self, next_step: int = 0, gripper_mm: float | None = None) -> None:
         if self._trajectory_view is None:
             return
-        cv2.imshow(LiveTrajectoryView.WINDOW, self._trajectory_view.render(next_step, gripper_mm))
-        cv2.waitKey(1)
+        self._trajectory_view.show(next_step, gripper_mm)
 
     def _query_policy(self):
         # A failed query must never replay the previous chunk against a newly
@@ -1975,6 +1989,10 @@ def _parse_args(parser=None, argv=None):
         help="真机 chunk_relative 推理时实时显示即将执行的 Robot Base TCP 轨迹",
     )
     p.add_argument(
+        "--trajectory_view", choices=("3d", "2d"), default="3d",
+        help="实时轨迹窗口样式：可旋转 3D（默认）或 XY/XZ/YZ 三视图",
+    )
+    p.add_argument(
         "--max_pos_speed",
         type=float,
         default=DEFAULT_MAX_POS_SPEED,
@@ -2214,6 +2232,7 @@ def main(args=None):
         trajectory_log=args.trajectory_log,
         control_freq=args.control_freq,
         visualize_trajectory=args.visualize_trajectory,
+        trajectory_view=args.trajectory_view,
     )
     inference.run()
 

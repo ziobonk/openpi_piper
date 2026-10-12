@@ -12,6 +12,7 @@ from scipy.spatial.transform import Rotation
 from examples.piper.chunk_relative import infer_pick_place
 from examples.piper.runtime import inference_eef
 from examples.piper.runtime.live_trajectory_view import LiveTrajectoryView
+from examples.piper.runtime.live_trajectory_view import draw_3d_snapshot
 
 
 def test_preview_matches_executed_robot_base_poses_with_read_only_actions():
@@ -56,9 +57,38 @@ def test_pick_place_preview_defaults_on_and_can_be_disabled(monkeypatch):
     monkeypatch.setattr(sys, "argv", base_args)
     infer_pick_place.main()
     assert "--visualize_trajectory" in parsed[-1]
+    assert parsed[-1][parsed[-1].index("--trajectory_view") + 1] == "3d"
+    monkeypatch.setattr(sys, "argv", [*base_args, "--trajectory-view", "2d"])
+    infer_pick_place.main()
+    assert parsed[-1][parsed[-1].index("--trajectory_view") + 1] == "2d"
     monkeypatch.setattr(sys, "argv", [*base_args, "--no-visualize-trajectory"])
     infer_pick_place.main()
     assert "--visualize_trajectory" not in parsed[-1]
+
+
+def test_3d_snapshot_draws_equal_axes_and_preserves_mouse_view():
+    import matplotlib as mpl
+
+    mpl.use("Agg")
+    import matplotlib.pyplot as plt
+
+    view = LiveTrajectoryView()
+    anchor = np.array([0.3, 0.1, 0.2, 0.2, -0.1, 0.3])
+    actions = np.array([[0.01, 0.02, 0.01, 0.1, 0.2, 0.1, 5], [0.03, 0.04, 0.02, -0.1, 0.3, 0.2, 10]], dtype=np.float32)
+    view.set_chunk(anchor, actions, 2)
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+    ax.view_init(elev=18, azim=42)
+    draw_3d_snapshot(ax, view.anchor, view.targets, 0, 10.0)
+    assert ax.elev == 18
+    assert ax.azim == 42
+    limits = [ax.get_xlim(), ax.get_ylim(), ax.get_zlim()]
+    np.testing.assert_allclose([hi - lo for lo, hi in limits], np.repeat(limits[0][1] - limits[0][0], 3))
+    fig.canvas.draw()
+    draw_3d_snapshot(ax, view.anchor, view.targets, 1, 20.0)
+    assert ax.elev == 18
+    assert ax.azim == 42
+    plt.close(fig)
 
 
 def test_policy_query_previews_only_actions_selected_for_execution():
