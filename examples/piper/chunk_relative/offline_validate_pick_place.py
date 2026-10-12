@@ -23,7 +23,10 @@ from examples.piper.chunk_relative.infer_pick_place import training_metadata  # 
 
 def pose_matrix(pose: np.ndarray) -> np.ndarray:
     result = np.eye(4)
-    result[:3, :3] = Rotation.from_rotvec(pose[3:6]).as_matrix()
+    # WebSocket action arrays may be views into a read-only receive buffer;
+    # scipy Rotation requires a writable input array on some versions.
+    rotvec = np.array(pose[3:6], dtype=np.float64, copy=True)
+    result[:3, :3] = Rotation.from_rotvec(rotvec).as_matrix()
     result[:3, 3] = pose[:3]
     return result
 

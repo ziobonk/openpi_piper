@@ -39,7 +39,9 @@ def test_rollout_anchors_noncommuting_rotations_and_uses_dataset_observations():
             delta = np.linalg.inv(validation.pose_matrix(source[t, :6])) @ validation.pose_matrix(
                 source[next_index, :6]
             )
-            return {"actions": np.stack((np.zeros(7), np.r_[validation.matrix_pose(delta), source[next_index, 6]]))}
+            actions = np.stack((np.zeros(7), np.r_[validation.matrix_pose(delta), source[next_index, 6]]))
+            actions.setflags(write=False)  # WebSocket clients can expose immutable buffers.
+            return {"actions": actions}
 
     policy = Policy()
     predicted, expected, input_index, images = validation.rollout(
