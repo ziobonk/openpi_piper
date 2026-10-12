@@ -56,6 +56,8 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=3, help="future steps per query, 1..49")
     parser.add_argument("--tcp-offset-m", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"))
     parser.add_argument("--gripper-port", default=inference_eef.GRIPPER_PORT, help="DM USB2CAN serial port")
+    parser.add_argument("--gripper-open-rad", type=float, default=-10.0, help="measured DM fully open position (rad)")
+    parser.add_argument("--gripper-close-rad", type=float, default=0.0, help="measured DM fully closed position (rad)")
     parser.add_argument(
         "--visualize-trajectory", action=argparse.BooleanOptionalAction, default=True,
         help="show upcoming TCP targets in Robot Base during inference (default: on)",
@@ -69,6 +71,11 @@ def main() -> None:
         parser.error("steps must be 1..49 and port 1..65535")
     if not args.gripper_port:
         parser.error("pick_place inference requires a DM gripper serial port")
+    if (
+        not np.isfinite([args.gripper_open_rad, args.gripper_close_rad]).all()
+        or args.gripper_open_rad >= args.gripper_close_rad
+    ):
+        parser.error("gripper endpoints must be finite, with --gripper-open-rad < --gripper-close-rad")
     if not inference_eef._HAS_DM_GRIPPER:
         parser.error("DM gripper driver is unavailable")
     fps, (closed, opened), open_width_mm, prompt = training_metadata(args.dataset)
@@ -83,8 +90,8 @@ def main() -> None:
         "--model_gripper_range", str(closed), str(opened),
         "--gripper_open_width_mm", str(open_width_mm),
         "--gripper_port", args.gripper_port,
-        "--gripper_open_rad", "-10",
-        "--gripper_close_rad", "0",
+        "--gripper_open_rad", str(args.gripper_open_rad),
+        "--gripper_close_rad", str(args.gripper_close_rad),
         "--gripper_speed", "10",
         "--control_freq", str(fps),
         "--base_rs_size", str(base_width), str(base_height),
@@ -95,6 +102,7 @@ def main() -> None:
     if args.visualize_trajectory:
         runtime_argv.extend(("--visualize_trajectory", "--trajectory_view", args.trajectory_view))
     print(f"[pick_place] encoder {closed:.6f}..{opened:.6f} rad -> Piper 0..{open_width_mm:g} mm at inference")
+    print(f"[pick_place] DM open={args.gripper_open_rad:g} rad, closed={args.gripper_close_rad:g} rad")
     inference_eef.main(inference_eef._parse_args(argv=runtime_argv))  # noqa: SLF001
 
 

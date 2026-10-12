@@ -151,8 +151,8 @@ def test_dm_gripper_maps_width_to_negative_open_angle(monkeypatch):
         def set_position(self, position):
             sent.append((position, self.speed))
 
-        def position(self):
-            return -5.0
+        def read_feedback(self):
+            return {"err": 1, "pos": -5.0}
 
     monkeypatch.setattr(eef, "Usb2Can", lambda port: SimpleNamespace(port=port))
     monkeypatch.setattr(eef, "DmJ4310", lambda bus, can_id: SimpleNamespace(bus=bus, can_id=can_id))
@@ -164,6 +164,52 @@ def test_dm_gripper_maps_width_to_negative_open_angle(monkeypatch):
     assert gripper.read_mm() == 10.0
     with pytest.raises(ValueError, match="开闭角度必须不同"):
         eef.DmGripperController(open_rad=0.0, close_rad=0.0)
+
+
+def test_dm_gripper_rejects_missing_disabled_and_uncalibrated_feedback():
+    gripper = eef.DmGripperController.__new__(eef.DmGripperController)
+    gripper._open_rad = -10.0
+    gripper._close_rad = 0.0
+    gripper._open_width_mm = 20.0
+    for feedback, message in (
+        (None, "无位置反馈"),
+        ({"err": 0, "pos": -5.0}, "ERR=0"),
+        ({"err": 1, "pos": 2.806}, "超出标定开闭区间"),
+    ):
+        gripper._gripper = SimpleNamespace(read_feedback=lambda value=feedback: value)
+        with pytest.raises(eef.GripperFeedbackError, match=message):
+            gripper.read_mm()
+
+
+def test_piper_stops_startup_when_dm_gripper_enable_fails():
+    controller = eef.PiperEEFController.__new__(eef.PiperEEFController)
+    controller._piper = SimpleNamespace(EnablePiper=lambda: True, MotionCtrl_2=lambda *args: None)
+    controller._control_gripper = True
+    controller._gripper = SimpleNamespace(enable=lambda: False)
+    assert controller.enable() is False
+
+    disabled = []
+    controller._gripper = SimpleNamespace(
+        enable=lambda: True,
+        read_mm=lambda: (_ for _ in ()).throw(eef.GripperFeedbackError("uncalibrated")),
+        disable=lambda: disabled.append(True),
+    )
+    assert controller.enable() is False
+    assert disabled == [True]
+
+
+def test_gripper_feedback_loss_pauses_policy_without_reconnecting():
+    client = eef.PiperEEFInference.__new__(eef.PiperEEFInference)
+    client._action_cache = np.ones((3, 7), dtype=np.float32)
+    client._chunk_tcp_base = np.ones(6)
+    client._trajectory_view = None
+    client._inferring = True
+    client._build_observation = lambda: (_ for _ in ()).throw(eef.GripperFeedbackError("no feedback"))
+    client._connect_policy = lambda: pytest.fail("should not reconnect policy on gripper feedback loss")
+    client._query_policy()
+    assert client._action_cache is None
+    assert client._chunk_tcp_base is None
+    assert client._inferring is False
 
 
 def test_eef_camera_creation_accepts_dataset_resolution_without_hardware(monkeypatch):

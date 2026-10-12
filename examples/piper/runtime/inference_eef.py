@@ -513,7 +513,14 @@ class PiperEEFController:
         if self._control_gripper:
             if self._gripper is not None:
                 if not self._gripper.enable():
-                    print("[Piper] 警告: DM 夹爪使能失败，仍继续 (夹爪可能不受控)")
+                    print("[Piper] DM 夹爪使能失败，停止启动策略")
+                    return False
+                try:
+                    self._gripper.read_mm()
+                except GripperFeedbackError as exc:
+                    self._gripper.disable()
+                    print(f"[Piper] DM 夹爪状态无效，停止启动策略: {exc}")
+                    return False
             else:
                 self._piper.GripperCtrl(0, GRIPPER_EFFORT, 0x02, 0)
                 time.sleep(0.05)
@@ -621,7 +628,7 @@ class PiperEEFController:
         self._last_command_euler_rad = None
         if self._control_gripper:
             if self._gripper is not None:
-                self._gripper.open()  # 达妙夹爪: 0 rad = 全开 (安全默认)
+                self._gripper.open()  # 按当前已标定的 DM 全开角度动作
             else:
                 self._piper.GripperCtrl(PIPER_GRIPPER_OPEN_RAW, GRIPPER_EFFORT, 0x01, 0)
         print("[Piper] 已到初始位姿")
@@ -635,6 +642,10 @@ class PiperEEFController:
 # ===========================================================================
 # DM 夹爪控制封装 (达妙 DM-J4310-2EC, 力位模式)
 # ===========================================================================
+
+
+class GripperFeedbackError(RuntimeError):
+    """DM feedback is absent or inconsistent with its calibrated travel."""
 
 
 class DmGripperController:
@@ -676,7 +687,7 @@ class DmGripperController:
         self._gripper.disable()
 
     def open(self):
-        """全开 (0 rad)。阻塞直到到位。"""
+        """移动到已标定的全开角度，阻塞直到到位。"""
         self._gripper.open()
 
     def shutdown(self):
@@ -698,10 +709,20 @@ class DmGripperController:
         self._gripper.set_position(self._mm_to_rad(gripper_mm))
 
     def read_mm(self) -> float:
-        """读取当前夹爪宽度 (mm)。"""
-        pos = self._gripper.position()
-        if pos is None:
-            return 0.0
+        """读取已使能夹爪的开度；无反馈或标定不符时停止推理。"""
+        feedback = self._gripper.read_feedback()
+        if feedback is None:
+            raise GripperFeedbackError("DM 夹爪无位置反馈")
+        if feedback["err"] != 1:
+            raise GripperFeedbackError(f"DM 夹爪未使能或故障: ERR={feedback['err']}")
+        pos = float(feedback["pos"])
+        lo, hi = sorted((self._open_rad, self._close_rad))
+        margin_rad = 0.2
+        if not np.isfinite(pos) or not lo - margin_rad <= pos <= hi + margin_rad:
+            raise GripperFeedbackError(
+                f"DM 当前角度 {pos:.3f} rad 超出标定开闭区间 [{lo:.3f}, {hi:.3f}] rad；"
+                "请测量实际端点后更新 --gripper-open-rad / --gripper-close-rad"
+            )
         return self._rad_to_mm(pos)
 
 
@@ -1054,6 +1075,7 @@ class PiperEEFInference:
 
         # 1. 使能机械臂
         if not self._robot.enable():
+            self._robot.close_gripper_transport()
             return
         camera_started = False
         try:
@@ -1341,6 +1363,13 @@ class PiperEEFInference:
                 if server_timings:
                     parts.append(f"server={server_timings.get('total_ms', 0):.0f}ms")
                 print(f"  [Policy] {' | '.join(parts)}")
+        except GripperFeedbackError as e:
+            self._action_cache = None
+            self._chunk_tcp_base = None
+            if self._trajectory_view is not None:
+                self._trajectory_view.clear()
+            self._inferring = False
+            print(f"[Control] 夹爪反馈异常，已暂停推理: {e}")
         except Exception as e:
             self._action_cache = None
             self._chunk_tcp_base = None

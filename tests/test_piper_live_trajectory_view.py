@@ -88,6 +88,13 @@ def test_pick_place_preview_defaults_on_and_can_be_disabled(monkeypatch):
     monkeypatch.setattr(sys, "argv", [*base_args, "--no-visualize-trajectory"])
     infer_pick_place.main()
     assert "--visualize_trajectory" not in parsed[-1]
+    monkeypatch.setattr(sys, "argv", [*base_args, "--gripper-open-rad", "-7.2", "--gripper-close-rad", "4.1"])
+    infer_pick_place.main()
+    assert parsed[-1][parsed[-1].index("--gripper_open_rad") + 1] == "-7.2"
+    assert parsed[-1][parsed[-1].index("--gripper_close_rad") + 1] == "4.1"
+    monkeypatch.setattr(sys, "argv", [*base_args, "--gripper-open-rad", "4.1", "--gripper-close-rad", "4.1"])
+    with pytest.raises(SystemExit):
+        infer_pick_place.main()
 
 
 def test_3d_snapshot_draws_equal_axes_and_preserves_mouse_view():

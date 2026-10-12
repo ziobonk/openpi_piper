@@ -135,14 +135,20 @@ uv run examples/piper/chunk_relative/offline_validate_pick_place.py \
 uv run examples/piper/chunk_relative/infer_pick_place.py \
   --host <server> --port 6006 \
   --base-camera <realsense_serial> --wrist-camera <opencv_index> \
-  --gripper-port /dev/ttyACM0 --steps 3
+  --gripper-port /dev/ttyACM0 --steps 3 \
+  --gripper-open-rad <实测全开角度> --gripper-close-rad <实测全闭角度>
 ```
 
 机器人端需能读取准备后数据集的 `meta/info.json` 和 `meta/tasks.jsonl`。
 推理提示词读取自 `meta/tasks.jsonl` 的 `task` 字段；应与训练该检查点时使用的任务文本一致。
 基座 RealSense 采集分辨率读取自 `meta/info.json` 的 `observation.images.global.shape`，
 当前数据集为 640×480。
-此入口使用 DM 夹爪：`0 rad` 为关、`-10 rad` 为开，速度上限设为 `10 rad/s`；
+此入口使用 DM 夹爪：默认参数是 `0 rad` 为关、`-10 rad` 为开，速度上限为 `10 rad/s`。
+**必须以当前电机反馈坐标下的实测开闭端点覆盖默认角度**；一次反馈角度不能推算两个端点。
+例如现场读到 `+2.806 rad` 时夹爪处于中间位置，默认的 `[-10, 0] rad` 区间就不适用。
+程序会在启动时验证夹爪使能状态和反馈角度；使能失败、反馈丢失或当前角度超出
+标定端点时停止启动或暂停推理，避免把无效反馈当作全闭状态。
+`test_dm_gripper.py enable` 单独测试后会自动禁用电机；测试成功不代表下一次推理已使能。
 串口按设备实际位置调整。运行时先把 DM 位置按 `0..20 mm` 的虚拟开度换算为
 模型状态的源编码器角度，再把模型预测的源角度换算为 DM 目标位置。
 源角度闭/开端点取自数据集元数据，超出范围的目标会被限幅；数据集本身仍保留原始角度。
