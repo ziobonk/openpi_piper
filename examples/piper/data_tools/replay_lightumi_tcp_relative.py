@@ -120,6 +120,12 @@ def make_targets(poses: np.ndarray, robot_base: np.ndarray) -> np.ndarray:
     return replay.chunk_relative_targets(actions, 0, len(actions) - 1, robot_base)
 
 
+def make_chunk_targets(poses: np.ndarray, start: int, horizon: int, robot_base: np.ndarray) -> np.ndarray:
+    """Anchor one action chunk at the Piper TCP measured at that chunk's start."""
+    actions = np.column_stack((poses, np.zeros(len(poses))))
+    return replay.chunk_relative_targets(actions, start, horizon, robot_base)
+
+
 def relative_poses(poses: np.ndarray, anchor: np.ndarray) -> np.ndarray:
     """Express absolute TCP poses in their measured initial TCP frame."""
     anchor_inverse = np.linalg.inv(replay._pose6_to_matrix(anchor))
@@ -249,6 +255,10 @@ def run(args: argparse.Namespace) -> None:
         f"[lightUMI] episode {args.episode}: {len(poses)} unique action poses, {count} future TCP targets, {fps:g} Hz"
     )
     print("[lightUMI] action[0] is the data anchor; the repeated final action is dropped; any gripper angle is ignored")
+    exec_horizon = getattr(args, "exec_horizon", None)
+    if exec_horizon is not None:
+        print(f"[ChunkRelative] re-anchor to measured Piper TCP every {exec_horizon} future targets; "
+              f"{len(range(0, count, exec_horizon))} chunks")
     print(
         f"[lightUMI] max relative displacement {np.max(np.linalg.norm(relative[:, :3], axis=1)) * 1000:.1f} mm; "
         f"max step {pos_steps.max() * 1000:.1f} mm, {np.rad2deg(rot_steps.max()):.2f} deg"
@@ -266,11 +276,10 @@ def run(args: argparse.Namespace) -> None:
     if not robot.enable(speed_pct=args.speed_pct):
         raise RuntimeError("Piper enable failed")
     base = robot.get_eef_pose().astype(np.float64)
-    targets = make_targets(poses, base)
-    replay._check_workspace(targets, args.workspace)
+    if exec_horizon is None:
+        replay._check_workspace(make_targets(poses, base), args.workspace)
     subdivisions = max(1, round(1 / args.speed))
     period = 1 / fps / args.speed / subdivisions
-    previous = np.r_[base, 0.0]
     print(
         f"[Replay] Piper TCP anchor {base.round(4)}, {subdivisions} commands/data frame, {period * 1000:.1f} ms interval"
     )
@@ -282,24 +291,32 @@ def run(args: argparse.Namespace) -> None:
         if not args.yes:
             input("Check TCP axes, workspace, and clear path; press Enter to replay or Ctrl+C to cancel...")
         started_at = time.monotonic()
-        for frame_index, target in enumerate(targets, start=1):
-            if args.step:
-                input(f"[Step] action {frame_index}/{count}; press Enter to send...")
-            for substep in range(1, subdivisions + 1):
-                command = replay.interpolate_action(previous, target, substep / subdivisions)
-                replay._check_workspace(command[None, :], args.workspace)
-                robot.send_eef_command(command[:6])
-                time.sleep(period)
-            previous = target
-            actual = robot.get_eef_pose().astype(np.float64)
-            measured.append(actual)
-            commanded.append(target[:6].copy())
-            elapsed.append(time.monotonic() - started_at)
-            if args.readback:
-                error = np.linalg.inv(replay._pose6_to_matrix(target[:6])) @ replay._pose6_to_matrix(actual)
-                errors.append((np.linalg.norm(error[:3, 3]), Rotation.from_matrix(error[:3, :3]).magnitude()))
-            if args.step or frame_index % 25 == 0 or frame_index == count:
-                print(f"  target {frame_index}/{count}: xyz={target[:3].round(4)}, rotvec={target[3:6].round(3)}")
+        chunk_size = exec_horizon or count
+        for start in range(0, count, chunk_size):
+            chunk_base = base if start == 0 else robot.get_eef_pose().astype(np.float64)
+            targets = make_chunk_targets(poses, start, min(chunk_size, count - start), chunk_base)
+            replay._check_workspace(targets, args.workspace)
+            if exec_horizon is not None:
+                print(f"[Chunk {start}] Piper TCP anchor {chunk_base.round(4)}; {len(targets)} targets")
+            previous = np.r_[chunk_base, 0.0]
+            for frame_index, target in enumerate(targets, start=start + 1):
+                if args.step:
+                    input(f"[Step] action {frame_index}/{count}; press Enter to send...")
+                for substep in range(1, subdivisions + 1):
+                    command = replay.interpolate_action(previous, target, substep / subdivisions)
+                    replay._check_workspace(command[None, :], args.workspace)
+                    robot.send_eef_command(command[:6])
+                    time.sleep(period)
+                previous = target
+                actual = robot.get_eef_pose().astype(np.float64)
+                measured.append(actual)
+                commanded.append(target[:6].copy())
+                elapsed.append(time.monotonic() - started_at)
+                if args.readback:
+                    error = np.linalg.inv(replay._pose6_to_matrix(target[:6])) @ replay._pose6_to_matrix(actual)
+                    errors.append((np.linalg.norm(error[:3, 3]), Rotation.from_matrix(error[:3, :3]).magnitude()))
+                if args.step or frame_index % 25 == 0 or frame_index == count:
+                    print(f"  target {frame_index}/{count}: xyz={target[:3].round(4)}, rotvec={target[3:6].round(3)}")
         print(f"[Replay] Completed {count} TCP targets")
         if errors:
             values = np.asarray(errors)
@@ -316,7 +333,8 @@ def run(args: argparse.Namespace) -> None:
                 Path("local/runs/outputs")
                 / f"{args.data_dir.name}_episode{args.episode:03d}_{datetime.now(UTC):%Y%m%d_%H%M%S_%f}_tcp_comparison.gif"
             )
-            dataset_relative = np.vstack((np.zeros(6), relative[: len(measured) - 1, :6]))
+            dataset_relative = (relative_poses(np.stack(commanded), base) if exec_horizon is not None
+                                else np.vstack((np.zeros(6), relative[: len(measured) - 1, :6])))
             gif_fps = args.gif_fps or max(1, min(30, round(fps * args.speed)))
             save_comparison(
                 gif_path,
@@ -324,7 +342,7 @@ def run(args: argparse.Namespace) -> None:
                 np.stack(measured),
                 np.stack(commanded),
                 np.asarray(elapsed),
-                poses[0],
+                base if exec_horizon is not None else poses[0],
                 base,
                 episode=args.episode,
                 dataset_fps=fps,
@@ -338,6 +356,8 @@ def main() -> None:
     parser.add_argument("--episode", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true", help="validate the episode without connecting to Piper")
     parser.add_argument("--max-frames", type=int, default=None, help="limit future TCP targets for initial validation")
+    parser.add_argument("--exec-horizon", type=int, default=None,
+                        help="chunk-relative mode: re-anchor at current Piper TCP after this many future targets")
     parser.add_argument("--speed", type=float, default=0.25, help="dataset playback time scale; default 0.25")
     parser.add_argument("--speed-pct", type=int, default=30, help="Piper Cartesian speed percentage")
     parser.add_argument("--can-name", default="can0")
@@ -364,6 +384,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.speed <= 0 or not 20 <= args.speed_pct <= 100 or (args.max_frames is not None and args.max_frames < 1):
         parser.error("speed must be positive, speed-pct 20..100, and max-frames >= 1")
+    if args.exec_horizon is not None and args.exec_horizon < 1:
+        parser.error("exec-horizon must be >= 1")
     if args.comparison_gif is not None and args.comparison_gif.suffix.lower() != ".gif":
         parser.error("comparison-gif must end in .gif")
     if args.gif_fps is not None and (not np.isfinite(args.gif_fps) or args.gif_fps <= 0):

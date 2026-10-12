@@ -16,6 +16,7 @@ from examples.piper.data_tools.replay_lightumi_tcp_relative import (  # noqa: E4
     ROTATION_NAMES,
     decode_tcp_actions,
     load_episode,
+    make_chunk_targets,
     make_targets,
     relative_poses,
 )
@@ -43,6 +44,15 @@ def test_rotation_columns_and_tcp_anchor_use_full_se3():
     expected = _matrix(base) @ np.linalg.inv(_matrix(poses[0])) @ _matrix(poses[1])
     np.testing.assert_allclose(_matrix(target[0]), expected, atol=1e-10)
     np.testing.assert_allclose(target[0, 6], 0)
+
+
+def test_chunk_targets_reanchor_at_each_measured_robot_pose():
+    poses = np.array([[1.0, 0, 0, 0, 0, 0], [1.01, 0, 0, 0, 0, 0],
+                      [1.02, 0, 0, 0, 0, 0], [1.03, 0, 0, 0, 0, 0]])
+    first = make_chunk_targets(poses, 0, 2, np.array([0.4, 0, 0.3, 0, 0, 0]))
+    second = make_chunk_targets(poses, 2, 2, np.array([0.415, 0, 0.3, 0, 0, 0]))
+    np.testing.assert_allclose(first[:, 0], [0.41, 0.42])
+    np.testing.assert_allclose(second[:, 0], [0.425])
 
 
 @pytest.mark.parametrize("world", ["PICO-world", "source-tracking-world"])
@@ -168,6 +178,42 @@ def test_live_path_records_tcp_and_creates_gif(monkeypatch, tmp_path):
         assert saved["elapsed_s"][1] >= 0
     with Image.open(tmp_path / "comparison.gif") as gif:
         assert gif.n_frames == 2
+
+
+def test_chunk_replay_uses_new_feedback_anchor(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from examples.piper.data_tools import replay_lightumi_tcp_relative as lightumi
+    from examples.piper.runtime import inference_eef as eef
+
+    poses = np.array([[1.0 + i * 0.01, 0, 0, 0, 0, 0] for i in range(4)])
+    sent = []
+
+    class Robot:
+        def enable(self, *, speed_pct):
+            return True
+
+        def get_eef_pose(self):
+            x = sent[-1][0] - (0.005 if len(sent) >= 2 else 0) if sent else 0.4
+            return np.array([x, 0, 0.3, 0, 0, 0])
+
+        def send_eef_command(self, pose):
+            sent.append(pose.copy())
+
+    monkeypatch.setattr(lightumi, "load_episode", lambda *_: (30.0, poses))
+    monkeypatch.setattr(eef, "PiperEEFController", lambda *_, **__: Robot())
+    monkeypatch.setattr(lightumi.time, "sleep", lambda _: None)
+    monkeypatch.setattr(lightumi, "save_comparison", lambda *_args, **_kwargs: None)
+    args = SimpleNamespace(
+        data_dir=tmp_path, episode=0, dry_run=False, max_frames=3, exec_horizon=2,
+        speed=1.0, speed_pct=30, can_name="can0", tcp_offset_m=None,
+        step=False, readback=False, yes=True,
+        max_total_translation_m=0.5, max_step_translation_m=0.05,
+        max_total_rotation_deg=120, max_step_rotation_deg=20,
+        workspace=None, comparison_gif=tmp_path / "comparison.gif", gif_fps=3,
+    )
+    lightumi.run(args)
+    np.testing.assert_allclose([pose[0] for pose in sent], [0.41, 0.42, 0.425])
 
 
 def test_relative_pose_uses_initial_tcp_axes():

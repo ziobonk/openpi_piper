@@ -81,6 +81,22 @@ git log -1 --oneline
 
 ## lightUMI 9D/10D 数据的 TCP-relative 回放
 
+`local/datasets/lightumi_20261012_213232` 有两集 30 Hz、9D TCP 动作，没有夹爪反馈。可直接用专用入口做按块重新锚定的 chunk-relative 回放，无需生成带虚拟夹爪状态的派生数据集。`--exec-horizon 20` 表示每执行 20 个未来目标就读取一次 Piper 当前 TCP，下一块按 `T_robot_now @ inv(T_action[start]) @ T_action[k]` 生成目标；每块首个 action 只作锚点，不下发。数据源的末尾重复 action 会丢弃，全程不控制夹爪。
+
+```bash
+uv run examples/piper/data_tools/replay_lightumi_tcp_relative.py \
+  --data-dir local/datasets/lightumi_20261012_213232 \
+  --episode 0 --exec-horizon 20 --dry-run
+
+# 首次真机试播：确认 TCP 偏移和工作空间后，逐帧执行前 20 个目标
+uv run examples/piper/data_tools/replay_lightumi_tcp_relative.py \
+  --data-dir local/datasets/lightumi_20261012_213232 \
+  --episode 0 --exec-horizon 20 --max-frames 20 \
+  --step --speed 0.25 --readback
+```
+
+离线校验得到 episode 0 的 354 个未来 TCP 目标（18 块），episode 1 的 582 个目标（30 块）。若要回放第 1 集，改成 `--episode 1`；完整回放时去掉 `--max-frames` 和 `--step`。`--tcp-offset-m X Y Z` 应设置为实际 J6 到工具 TCP 的偏移；可用 `--workspace` 限制目标范围。按块回放生成的比较轨迹以每块实际下发的目标为基准，以便与 Piper 实测轨迹对齐。
+
 `lightumi_20261009_212049` 是单路 30 Hz LeRobot 数据：`action` 为下一对齐帧的绝对 PICO World TCP `[xyz, rotation-6D]`，旋转 6D 按旋转矩阵前两列分组保存；没有夹爪动作或 TCP 状态。专用入口只读取 Parquet 的 action 列，不解码视频。它以第一个 action 为数据基准，以启动时实测 Piper TCP 为机器人基准，执行 `T_robot_start @ inv(T_action[0]) @ T_action[k]`。首个 action 只作基准，末尾重复 action 被丢弃，夹爪保持原状态。此模式从启动到结束只锚定一次，要求两端 TCP 原点与轴方向一致。
 
 先离线验证（不会连接机械臂）：
