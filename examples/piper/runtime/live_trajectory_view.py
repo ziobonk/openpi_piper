@@ -27,6 +27,9 @@ class LiveTrajectoryView:
     def __init__(self) -> None:
         self.anchor: np.ndarray | None = None
         self.targets: np.ndarray | None = None
+        self._history: list[list[np.ndarray]] = []
+        self._active_history: list[np.ndarray] | None = None
+        self._history_xyz_cache: np.ndarray | None = None
         self._blank = np.full((430, 1170, 3), 25, dtype=np.uint8)
         cv2.putText(
             self._blank,
@@ -40,8 +43,36 @@ class LiveTrajectoryView:
         )
 
     def clear(self) -> None:
+        """Discard the pending chunk while retaining successfully sent targets."""
         self.anchor = None
         self.targets = None
+        self._active_history = None
+
+    @property
+    def history_xyz(self) -> np.ndarray:
+        """Robot Base command history; NaN rows separate independently anchored chunks."""
+        if self._history_xyz_cache is None:
+            segments = [np.stack(segment) for segment in self._history if len(segment) > 1]
+            if segments:
+                separator = np.full((1, 3), np.nan)
+                rows = [segments[0]]
+                for segment in segments[1:]:
+                    rows.extend((separator, segment))
+                self._history_xyz_cache = np.vstack(rows)
+            else:
+                self._history_xyz_cache = np.empty((0, 3), dtype=np.float64)
+        return self._history_xyz_cache
+
+    def record_sent(self, target_pose: np.ndarray) -> None:
+        """Append a target only after its robot command call has completed."""
+        target_pose = np.asarray(target_pose, dtype=np.float64)
+        if target_pose.shape != (6,) or not np.isfinite(target_pose).all() or self.anchor is None:
+            raise ValueError("a finite target and active TCP anchor are required")
+        if self._active_history is None:
+            self._active_history = [self.anchor[:3].copy()]
+            self._history.append(self._active_history)
+        self._active_history.append(target_pose[:3].copy())
+        self._history_xyz_cache = None
 
     def start(self) -> None:
         """The OpenCV window runs in the inference process."""
@@ -69,22 +100,37 @@ class LiveTrajectoryView:
         targets[:, 3:6] = (anchor_rotation * local_rotations).as_rotvec()
         self.anchor = anchor.copy()
         self.targets = targets
+        self._active_history = None
 
     def render(self, next_step: int, gripper_mm: float | None = None) -> np.ndarray:
-        if self.targets is None or self.anchor is None:
+        history_xyz = self.history_xyz
+        if (self.targets is None or self.anchor is None) and len(history_xyz) == 0:
             return self._blank.copy()
-        if not 0 <= next_step < len(self.targets):
+        if self.targets is not None and not 0 <= next_step <= len(self.targets):
             raise ValueError("next_step is outside the planned chunk")
 
         canvas = np.full_like(self._blank, 25)
-        points = np.vstack((self.anchor[:3], self.targets[:, :3]))
-        current = self.targets[next_step]
-        rpy_deg = Rotation.from_rotvec(current[3:6].copy()).as_euler("xyz", degrees=True)
-        header = f"Robot Base TCP | next {next_step + 1}/{len(self.targets)} | origin {self.anchor[:3]} m"
+        active = self.targets is not None and self.anchor is not None
+        if active:
+            points = np.vstack((self.anchor[:3], self.targets[:, :3]))
+            current = self.targets[next_step] if next_step < len(self.targets) else None
+            reference = self.anchor[:3]
+            phase = f"next {next_step + 1}/{len(self.targets)}" if current is not None else "chunk complete"
+        else:
+            points = np.empty((0, 3), dtype=np.float64)
+            current = None
+            reference = history_xyz[0]
+            phase = "paused"
+        header = f"Robot Base TCP | {phase} | sent {sum(len(s) - 1 for s in self._history)} targets"
         cv2.putText(canvas, header, (16, 27), cv2.FONT_HERSHEY_SIMPLEX, 0.56, (230, 230, 230), 1, cv2.LINE_AA)
-        grip = "?" if gripper_mm is None else f"{gripper_mm:.1f} mm"
-        detail = f"target xyz {current[:3].round(3)} m | RPY {rpy_deg.round(1)} deg | grip {grip}"
-        cv2.putText(canvas, detail, (16, 51), cv2.FONT_HERSHEY_SIMPLEX, 0.56, (230, 230, 230), 1, cv2.LINE_AA)
+        if current is not None:
+            rpy_deg = Rotation.from_rotvec(current[3:6].copy()).as_euler("xyz", degrees=True)
+            grip = "?" if gripper_mm is None else f"{gripper_mm:.1f} mm"
+            detail = f"target xyz {current[:3].round(3)} m | RPY {rpy_deg.round(1)} deg | grip {grip}"
+            cv2.putText(canvas, detail, (16, 51), cv2.FONT_HERSHEY_SIMPLEX, 0.56, (230, 230, 230), 1, cv2.LINE_AA)
+
+        finite_history = history_xyz[np.isfinite(history_xyz).all(axis=1)]
+        all_points = np.vstack((finite_history, points))
 
         for panel, (x_axis, y_axis, label) in enumerate(self._PAIRS):
             left = 10 + panel * 390
@@ -102,20 +148,27 @@ class LiveTrajectoryView:
                 1,
                 cv2.LINE_AA,
             )
-            xy_mm = (points[:, [x_axis, y_axis]] - self.anchor[[x_axis, y_axis]]) * 1000
-            center = (xy_mm.min(axis=0) + xy_mm.max(axis=0)) / 2
-            radius = max(float(np.max(np.abs(xy_mm - center))), 25.0) * 1.25
+            all_xy_mm = (all_points[:, [x_axis, y_axis]] - reference[[x_axis, y_axis]]) * 1000
+            center = (all_xy_mm.min(axis=0) + all_xy_mm.max(axis=0)) / 2
+            radius = max(float(np.max(np.abs(all_xy_mm - center))), 25.0) * 1.25
             scale = 132.0 / radius
 
-            origin = _project(xy_mm[0], center, scale, left, top)
+            origin = _project(np.zeros(2), center, scale, left, top)
             cv2.line(canvas, (left + 5, origin[1]), (left + width - 5, origin[1]), (48, 48, 48), 1)
             cv2.line(canvas, (origin[0], top + 30), (origin[0], top + height - 5), (48, 48, 48), 1)
-            pixels = [_project(point, center, scale, left, top) for point in xy_mm]
-            for index in range(1, len(pixels)):
-                color = (100, 100, 100) if index <= next_step else (255, 170, 40)
-                cv2.line(canvas, pixels[index - 1], pixels[index], color, 2, cv2.LINE_AA)
-            cv2.circle(canvas, origin, 5, (70, 210, 70), -1, cv2.LINE_AA)
-            cv2.circle(canvas, pixels[next_step + 1], 7, (50, 60, 255), -1, cv2.LINE_AA)
+            for segment in self._history:
+                coords = (np.stack(segment)[:, [x_axis, y_axis]] - reference[[x_axis, y_axis]]) * 1000
+                pixels = [_project(point, center, scale, left, top) for point in coords]
+                for index in range(1, len(pixels)):
+                    cv2.line(canvas, pixels[index - 1], pixels[index], (100, 100, 100), 2, cv2.LINE_AA)
+            if active:
+                xy_mm = (points[:, [x_axis, y_axis]] - reference[[x_axis, y_axis]]) * 1000
+                pixels = [_project(point, center, scale, left, top) for point in xy_mm]
+                for index in range(next_step + 1, len(pixels)):
+                    cv2.line(canvas, pixels[index - 1], pixels[index], (255, 170, 40), 2, cv2.LINE_AA)
+                cv2.circle(canvas, origin, 5, (70, 210, 70), -1, cv2.LINE_AA)
+                if current is not None:
+                    cv2.circle(canvas, pixels[next_step + 1], 7, (50, 60, 255), -1, cv2.LINE_AA)
             cv2.putText(
                 canvas,
                 f"range +/-{radius:.0f} mm",
@@ -130,49 +183,65 @@ class LiveTrajectoryView:
 
 
 def draw_3d_snapshot(
-    ax, anchor: np.ndarray | None, targets: np.ndarray | None, next_step: int, gripper_mm: float | None
+    ax,
+    anchor: np.ndarray | None,
+    targets: np.ndarray | None,
+    next_step: int,
+    gripper_mm: float | None,
+    history_xyz: np.ndarray | None = None,
 ) -> None:
-    """Draw a chunk without resetting the user's 3D camera angle."""
+    """Draw cumulative sent targets and the active chunk without resetting the camera."""
     elevation, azimuth = ax.elev, ax.azim
     ax.clear()
+    history_xyz = np.empty((0, 3)) if history_xyz is None else np.asarray(history_xyz)
+    finite_history = history_xyz[np.isfinite(history_xyz).all(axis=1)]
+    if len(history_xyz):
+        ax.plot(*history_xyz.T, color="0.55", linewidth=2, label="sent target history")
+
     if anchor is None or targets is None:
         ax.set_title("Paused / waiting for policy chunk")
-        ax.set_xlabel("X (m)")
-        ax.set_ylabel("Y (m)")
-        ax.set_zlabel("Z (m)")
-        ax.view_init(elev=elevation, azim=azimuth)
-        return
+        all_points = finite_history
+    else:
+        points = np.vstack((anchor[:3], targets[:, :3]))
+        all_points = np.vstack((finite_history, points))
+        if next_step < len(targets):
+            current = targets[next_step]
+            ax.plot(
+                *points[next_step:].T,
+                color="tab:blue",
+                linewidth=2.5,
+                marker="o",
+                markersize=3,
+                label="upcoming targets",
+            )
+            ax.scatter(*current[:3], color="tab:red", s=80, label="next target")
+            extent = max(float(np.ptp(points, axis=0).max()), 0.06)
+            axis_length = max(0.015, extent * 0.15)
+            rotation = Rotation.from_rotvec(current[3:6].copy()).as_matrix()
+            for axis, color in enumerate(("red", "green", "blue")):
+                direction = rotation[:, axis] * axis_length
+                ax.quiver(*current[:3], *direction, color=color, linewidth=2, arrow_length_ratio=0.22)
+            grip = "?" if gripper_mm is None else f"{gripper_mm:.1f} mm"
+            ax.set_title(
+                f"Robot Base TCP | next {next_step + 1}/{len(targets)} | gripper {grip}\n"
+                f"target xyz {np.round(current[:3], 3)} m"
+            )
+        else:
+            ax.set_title(f"Robot Base TCP | chunk complete ({len(targets)} sent)")
+        ax.scatter(*anchor[:3], color="tab:green", s=65, label="observed TCP")
 
-    points = np.vstack((anchor[:3], targets[:, :3]))
-    current = targets[next_step]
-    # The previous targets have already been sent; pending targets are blue.
-    ax.plot(*points[: next_step + 1].T, color="0.55", linewidth=2, label="sent targets")
-    ax.plot(*points[next_step:].T, color="tab:blue", linewidth=2.5, marker="o", markersize=3, label="upcoming targets")
-    ax.scatter(*anchor[:3], color="tab:green", s=65, label="observed TCP")
-    ax.scatter(*current[:3], color="tab:red", s=80, label="next target")
-
-    extent = max(float(np.ptp(points, axis=0).max()), 0.06)
-    axis_length = max(0.015, extent * 0.15)
-    rotation = Rotation.from_rotvec(current[3:6].copy()).as_matrix()
-    for axis, color in enumerate(("red", "green", "blue")):
-        direction = rotation[:, axis] * axis_length
-        ax.quiver(*current[:3], *direction, color=color, linewidth=2, arrow_length_ratio=0.22)
-
-    center = (points.min(axis=0) + points.max(axis=0)) / 2
-    radius = max(float(np.ptp(points, axis=0).max()) / 2, axis_length) * 1.35
-    ax.set_xlim(center[0] - radius, center[0] + radius)
-    ax.set_ylim(center[1] - radius, center[1] + radius)
-    ax.set_zlim(center[2] - radius, center[2] + radius)
-    ax.set_box_aspect((1, 1, 1))
+    if len(all_points):
+        center = (all_points.min(axis=0) + all_points.max(axis=0)) / 2
+        radius = max(float(np.ptp(all_points, axis=0).max()) / 2, 0.03) * 1.35
+        ax.set_xlim(center[0] - radius, center[0] + radius)
+        ax.set_ylim(center[1] - radius, center[1] + radius)
+        ax.set_zlim(center[2] - radius, center[2] + radius)
+        ax.set_box_aspect((1, 1, 1))
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")
     ax.set_zlabel("Z (m)")
-    grip = "?" if gripper_mm is None else f"{gripper_mm:.1f} mm"
-    ax.set_title(
-        f"Robot Base TCP | next {next_step + 1}/{len(targets)} | gripper {grip}\n"
-        f"target xyz {np.round(current[:3], 3)} m"
-    )
-    ax.legend(loc="upper left", fontsize=8)
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(loc="upper left", fontsize=8)
     ax.view_init(elev=elevation, azim=azimuth)
 
 
@@ -228,6 +297,10 @@ class LiveTrajectory3DView:
     def targets(self) -> np.ndarray | None:
         return self._geometry.targets
 
+    @property
+    def history_xyz(self) -> np.ndarray:
+        return self._geometry.history_xyz
+
     def start(self) -> None:
         if self._process is not None:
             return
@@ -244,6 +317,11 @@ class LiveTrajectory3DView:
         self._generation += 1
         self._last_display = None
 
+    def record_sent(self, target_pose: np.ndarray) -> None:
+        self._geometry.record_sent(target_pose)
+        self._generation += 1
+        self._last_display = None
+
     def show(self, next_step: int = 0, gripper_mm: float | None = None) -> None:
         if self._process is None:
             return
@@ -255,7 +333,7 @@ class LiveTrajectory3DView:
         key = (self._generation, next_step, gripper_mm)
         if key == self._last_display:
             return
-        snapshot = (self.anchor, self.targets, next_step, gripper_mm)
+        snapshot = (self.anchor, self.targets, next_step, gripper_mm, self.history_xyz)
         try:
             self._updates.put_nowait(snapshot)
         except queue.Full:

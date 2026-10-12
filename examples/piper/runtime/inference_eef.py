@@ -1176,6 +1176,10 @@ class PiperEEFInference:
                     cur_pose = self._robot.get_eef_pose()
                 command_time = time.monotonic()
                 self._send_eef_cmd(cur_pose, target_pose, gripper_mm, data_dt)
+                if self._trajectory_view is not None:
+                    self._trajectory_view.record_sent(target_pose)
+                    if idx + 1 >= min(self._exec_horizon, self._action_cache.shape[0]):
+                        self._display_trajectory(idx + 1)
                 if self._trajectory_recorder is not None:
                     try:
                         measured_tcp = self._robot.get_eef_pose().astype(np.float64)
