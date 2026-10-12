@@ -1,5 +1,7 @@
 # PicoDual → Piper：chunk-relative pi05
 
+直接用 Piper SDK 读取真机 TCP 与原生夹爪、双相机采集的流程见 [PIPER_SDK_WORKFLOW.md](PIPER_SDK_WORKFLOW.md)。
+
 本流程使用 `local/datasets/pick_cube_0928_chunk_relative` 数据集：采样频率为 20 Hz，包含基座和腕部图像、以毫米为单位的 1 维夹爪状态，以及 PICO World 坐标系下 7 维的绝对 TCP 动作。训练时，每个 50 步动作块都转换为相对首步的位姿 `inv(T_action[0]) @ T_action[k]`；夹爪目标仍是绝对开度。第 0 步是与观测同帧的动作，真机推理时会跳过。旋转仍使用 rotvec 表示。
 
 完整训练流程、关键代码及归一化与推理细节见 [TRAINING_PIPELINE.md](TRAINING_PIPELINE.md)。UMI/lightumi UDP 遥操、采集、同帧转换与逐块回放见 [VALIDATION_PIPELINE.md](VALIDATION_PIPELINE.md)。

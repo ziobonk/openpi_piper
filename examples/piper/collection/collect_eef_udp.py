@@ -52,6 +52,7 @@ DATASET_FPS = 20.0
 BASE_SHAPE = (720, 1280, 3)
 WRIST_SHAPE = (480, 640, 3)
 STATE_NAMES = ["left_x", "left_y", "left_z", "left_rx", "left_ry", "left_rz", "left_gripper_width"]
+TCP_NAMES = ["tcp_x", "tcp_y", "tcp_z", "tcp_rx", "tcp_ry", "tcp_rz", "gripper_width_mm"]
 # 右手 T265 局部轴到 Piper TCP 局部轴；用于遥操相对增量。
 RIGHT_T265_TO_TCP = np.array([[0, -1, 0], [1, 0, 0], [0, 0, 1]], dtype=np.float64)
 DEFAULT_TASK = "<control mode> end effector <control mode>pick up the red bottle cap and place it into the cup."
@@ -396,7 +397,7 @@ def _image_stats(jpegs: list[bytes], expected_shape: tuple[int, int, int]) -> di
 
 def _aggregate_stats(episodes: list[dict]) -> dict:
     out = {}
-    for key in ("state", "actions", "image", "wrist_image"):
+    for key in episodes[0]["stats"]:
         parts = [episode["stats"][key] for episode in episodes]
         counts = np.asarray([part["count"][0] for part in parts], dtype=np.float64)
         total = counts.sum()
@@ -431,9 +432,28 @@ def _atomic_text(path: Path, contents: str):
 class PickPlaceWriter:
     """写入 pick_place 的字段、Parquet 路径、任务与统计元数据。"""
 
-    def __init__(self, root: Path, task: str):
+    def __init__(self, root: Path, task: str, *, fps: float = DATASET_FPS,
+                 base_shape: tuple[int, int, int] = BASE_SHAPE,
+                 wrist_shape: tuple[int, int, int] = WRIST_SHAPE,
+                 state_dim: int = 7, robot_type: str = "piper_eef",
+                 tcp_offset_m: tuple[float, float, float] | None = None,
+                 gripper_open_width_mm: float | None = None,
+                 raw_piper_sdk: bool = False):
         self.root = root
         self.task = task
+        self.fps = float(fps)
+        self.base_shape = base_shape
+        self.wrist_shape = wrist_shape
+        self.state_dim = state_dim
+        self.robot_type = robot_type
+        self.tcp_offset_m = list(tcp_offset_m) if tcp_offset_m is not None else None
+        self.gripper_open_width_mm = gripper_open_width_mm
+        self.raw_piper_sdk = raw_piper_sdk
+        if self.fps <= 0 or not np.isfinite(self.fps) or state_dim not in (1, 7):
+            raise ValueError("invalid FPS or state dimension")
+        if raw_piper_sdk and (state_dim != 7 or robot_type != "piper_eef" or self.tcp_offset_m is None
+                              or gripper_open_width_mm is None):
+            raise ValueError("raw Piper SDK dataset requires 7D Piper EEF state, TCP offset and gripper width")
         self._frames: list[dict] = []
         self._episode_stats: list[dict] = []
         self._episodes: list[dict] = []
@@ -441,12 +461,19 @@ class PickPlaceWriter:
         info_path = root / "meta" / "info.json"
         if info_path.exists():
             info = json.loads(info_path.read_text(encoding="utf-8"))
-            if info.get("codebase_version") != "v2.1" or info.get("fps") != DATASET_FPS:
+            if info.get("codebase_version") != "v2.1" or info.get("fps") != self.fps:
                 raise ValueError("现有数据集版本或帧率与 pick_place 不兼容")
-            if info.get("robot_type") != "piper_eef":
+            if info.get("robot_type") != self.robot_type:
                 raise ValueError("现有数据集不是机械臂基坐标系 EEF 数据，不能混合追加")
             if info.get("features") != self._features():
                 raise ValueError("现有数据集的 EEF/图像特征与 pick_place 不兼容")
+            if (self.tcp_offset_m is not None and info.get("tcp_offset_m") != self.tcp_offset_m) or (
+                self.gripper_open_width_mm is not None
+                and info.get("gripper_mapping", {}).get("robot_open_width_mm") != self.gripper_open_width_mm
+            ):
+                raise ValueError("现有数据集 TCP 偏移或夹爪开度不同，不能混合追加")
+            if raw_piper_sdk and info.get("source_kind") != "piper_sdk_raw":
+                raise ValueError("现有数据集不是 Piper SDK 原始采集格式")
             self.info = info
             self._episodes = self._read_jsonl(root / "meta" / "episodes.jsonl")
             self._episode_stats = self._read_jsonl(root / "meta" / "episodes_stats.jsonl")
@@ -460,6 +487,8 @@ class PickPlaceWriter:
                 raise ValueError(f"输出目录已有文件但没有 LeRobot 元数据: {root}")
             self.info = self._new_info()
         existing = next((entry for entry in self._tasks if entry["task"] == task), None)
+        if (self.state_dim == 1 or self.raw_piper_sdk) and self._tasks and existing is None:
+            raise ValueError("chunk-relative SDK dataset must use one task prompt; choose a new output directory")
         self.task_index = existing["task_index"] if existing else len(self._tasks)
         if existing is None:
             self._tasks.append({"task_index": self.task_index, "task": task})
@@ -468,24 +497,30 @@ class PickPlaceWriter:
     def _read_jsonl(path: Path) -> list[dict]:
         return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
-    @staticmethod
-    def _features() -> dict:
-        features = {name: {"dtype": "float32", "shape": [7], "names": STATE_NAMES} for name in ("state", "actions")}
+    def _features(self) -> dict:
+        pose_names = TCP_NAMES if self.raw_piper_sdk else STATE_NAMES
+        features = {
+            "state": {"dtype": "float32", "shape": [self.state_dim],
+                      "names": ["gripper_width_mm"] if self.state_dim == 1 else pose_names},
+            "actions": {"dtype": "float32", "shape": [7], "names": pose_names},
+        }
+        if self.raw_piper_sdk:
+            features["flange_pose"] = {"dtype": "float32", "shape": [6],
+                                        "names": ["flange_x", "flange_y", "flange_z", "flange_rx", "flange_ry", "flange_rz"]}
         for name in ("timestamp", "frame_index", "episode_index", "index", "task_index"):
             features[name] = {
                 "dtype": "float32" if name == "timestamp" else "int64",
                 "shape": [1],
                 "names": None,
             }
-        for name, shape in (("image", BASE_SHAPE), ("wrist_image", WRIST_SHAPE)):
+        for name, shape in (("image", self.base_shape), ("wrist_image", self.wrist_shape)):
             features[name] = {"dtype": "image", "shape": list(shape), "names": ["height", "width", "channel"]}
         return features
 
-    @classmethod
-    def _new_info(cls) -> dict:
-        return {
+    def _new_info(self) -> dict:
+        info = {
             "codebase_version": "v2.1",
-            "robot_type": "piper_eef",
+            "robot_type": self.robot_type,
             "pose_coordinate_frame": "robot_base_tcp",
             "coordinate_transform_applied": False,
             "state_pose_semantics": "measured TCP and gripper at observation time",
@@ -496,12 +531,31 @@ class PickPlaceWriter:
             "total_videos": 0,
             "total_chunks": 0,
             "chunks_size": 1000,
-            "fps": DATASET_FPS,
+            "fps": self.fps,
             "splits": {"train": "0:0"},
             "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
             "video_path": None,
-            "features": cls._features(),
+            "features": self._features(),
         }
+        if self.state_dim == 1:
+            info["state_pose_semantics"] = "gripper width only; no EEF pose is provided to the model"
+            info["action_pose_semantics"] = (
+                "same-frame measured absolute TCP pose; each sampled chunk becomes inv(T_actions[0]) @ T_actions[k]"
+            )
+            info["source_kind"] = "piper_sdk_read_only"
+            info["source_action_semantics"] = "same-frame measured TCP and native Piper gripper feedback"
+            info["gripper_mapping"] = {"robot_open_width_mm": self.gripper_open_width_mm,
+                                         "applied_to_dataset": True}
+            info["tcp_offset_m"] = self.tcp_offset_m
+        elif self.raw_piper_sdk:
+            info["source_kind"] = "piper_sdk_raw"
+            info["state_pose_semantics"] = "same-frame measured absolute robot-base TCP pose and native gripper width"
+            info["action_pose_semantics"] = "same-frame measured absolute robot-base TCP pose; no chunk-relative transform applied"
+            info["flange_pose_semantics"] = "same-frame Piper SDK J6 flange pose in robot base; metres and rotvec radians"
+            info["gripper_mapping"] = {"robot_open_width_mm": self.gripper_open_width_mm,
+                                         "applied_to_dataset": True}
+            info["tcp_offset_m"] = self.tcp_offset_m
+        return info
 
     @property
     def recording(self) -> bool:
@@ -515,14 +569,21 @@ class PickPlaceWriter:
     def next_episode(self) -> int:
         return self.info["total_episodes"]
 
-    def add_frame(self, state: np.ndarray, action: np.ndarray, base_jpeg: bytes, wrist_jpeg: bytes):
+    def add_frame(self, state: np.ndarray, action: np.ndarray, base_jpeg: bytes, wrist_jpeg: bytes,
+                  *, flange_pose: np.ndarray | None = None):
         state = np.asarray(state, dtype=np.float32)
         action = np.asarray(action, dtype=np.float32)
-        if state.shape != (7,) or action.shape != (7,) or not np.isfinite(state).all() or not np.isfinite(action).all():
+        if state.shape != (self.state_dim,) or action.shape != (7,) or not np.isfinite(state).all() or not np.isfinite(action).all():
             raise ValueError("state/actions 必须是有限的 7 维 EEF 位姿")
         if not base_jpeg.startswith(b"\xff\xd8") or not wrist_jpeg.startswith(b"\xff\xd8"):
             raise ValueError("相机图像必须是 JPEG 字节")
-        self._frames.append({"state": state, "actions": action, "image": base_jpeg, "wrist_image": wrist_jpeg})
+        frame = {"state": state, "actions": action, "image": base_jpeg, "wrist_image": wrist_jpeg}
+        if self.raw_piper_sdk:
+            flange_pose = np.asarray(flange_pose, dtype=np.float32)
+            if flange_pose.shape != (6,) or not np.isfinite(flange_pose).all():
+                raise ValueError("flange_pose must be finite and 6D")
+            frame["flange_pose"] = flange_pose
+        self._frames.append(frame)
 
     def discard(self):
         count = len(self._frames)
@@ -555,11 +616,10 @@ class PickPlaceWriter:
         index_offset = self.info["total_frames"]
         frames = []
         for i, frame in enumerate(source_frames):
-            frames.append(
-                {
+            row = {
                     "state": frame["state"],
                     "actions": frame["actions"],
-                    "timestamp": np.float32(i / DATASET_FPS),
+                    "timestamp": np.float32(i / self.fps),
                     "frame_index": i,
                     "episode_index": episode_index,
                     "index": index_offset + i,
@@ -567,10 +627,12 @@ class PickPlaceWriter:
                     "image": {"bytes": frame["image"], "path": f"frame_{i:06d}.jpg"},
                     "wrist_image": {"bytes": frame["wrist_image"], "path": f"frame_{i:06d}.jpg"},
                 }
-            )
+            if self.raw_piper_sdk:
+                row["flange_pose"] = frame["flange_pose"]
+            frames.append(row)
         features = Features(
             {
-                "state": Sequence(length=7, feature=Value(dtype="float32")),
+                "state": Sequence(length=self.state_dim, feature=Value(dtype="float32")),
                 "actions": Sequence(length=7, feature=Value(dtype="float32")),
                 "timestamp": Value(dtype="float32"),
                 "frame_index": Value(dtype="int64"),
@@ -579,14 +641,17 @@ class PickPlaceWriter:
                 "task_index": Value(dtype="int64"),
                 "image": Image(),
                 "wrist_image": Image(),
+                **({"flange_pose": Sequence(length=6, feature=Value(dtype="float32"))} if self.raw_piper_sdk else {}),
             }
         )
         stats = {
             "state": _feature_stats(np.stack([f["state"] for f in source_frames])),
             "actions": _feature_stats(np.stack([f["actions"] for f in source_frames])),
-            "image": _image_stats([f["image"] for f in source_frames], BASE_SHAPE),
-            "wrist_image": _image_stats([f["wrist_image"] for f in source_frames], WRIST_SHAPE),
+            "image": _image_stats([f["image"] for f in source_frames], self.base_shape),
+            "wrist_image": _image_stats([f["wrist_image"] for f in source_frames], self.wrist_shape),
         }
+        if self.raw_piper_sdk:
+            stats["flange_pose"] = _feature_stats(np.stack([f["flange_pose"] for f in source_frames]))
         parquet_path = (
             self.root
             / "data"

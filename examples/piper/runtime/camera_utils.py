@@ -89,6 +89,7 @@ class RealSenseCameras:
         *,
         width: int = CAPTURE_WIDTH,
         height: int = CAPTURE_HEIGHT,
+        wrist_size: Optional[tuple[int, int]] = None,
         fps: int = CAPTURE_FPS,
     ):
         if not HAS_RS2:
@@ -99,6 +100,7 @@ class RealSenseCameras:
         self._third_serial = third_serial
         self._width = width
         self._height = height
+        self._wrist_size = wrist_size or (width, height)
         self._fps = fps
 
         self._pipelines: dict[str, rs.pipeline] = {}
@@ -137,20 +139,21 @@ class RealSenseCameras:
             pipe = rs.pipeline()
             cfg = rs.config()
             cfg.enable_device(sn)
-            cfg.enable_stream(rs.stream.color, self._width, self._height, rs.format.bgr8, self._fps)
+            frame_width, frame_height = self._wrist_size if name == "wrist" else (self._width, self._height)
+            cfg.enable_stream(rs.stream.color, frame_width, frame_height, rs.format.bgr8, self._fps)
 
             profile = pipe.start(cfg)
             device = profile.get_device()
             print(
                 f"[Camera] {name}: serial={sn} "
                 f"name={device.get_info(rs.camera_info.name)} "
-                f"{self._width}x{self._height}@{self._fps}fps"
+                f"{frame_width}x{frame_height}@{self._fps}fps"
             )
 
             self._pipelines[name] = pipe
             self._configs[name] = cfg
             # 初始化占位帧
-            self._latest[name] = np.zeros((self._height, self._width, 3), dtype=np.uint8)
+            self._latest[name] = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
 
         # 等几帧稳定
         print("[Camera] 等待首帧...")
@@ -414,6 +417,7 @@ def create_cameras(
     third_cv_id: Optional[int] = None,
     wrist_cv_exposure: Optional[float] = None,
     base_rs_size: Optional[tuple[int, int]] = None,
+    wrist_rs_size: Optional[tuple[int, int]] = None,
 ):
     """创建一个统一接口的相机对象。
 
@@ -447,7 +451,8 @@ def create_cameras(
             if width <= 0 or height <= 0:
                 raise ValueError("RealSense capture size must be positive")
             rs_cam = RealSenseCameras(base_serial=base_serial, wrist_serial=wrist_serial,
-                                      third_serial=third_serial, width=width, height=height)
+                                      third_serial=third_serial, width=width, height=height,
+                                      wrist_size=wrist_rs_size)
 
     cv_cam = None
     if cv_requested:

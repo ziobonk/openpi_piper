@@ -67,8 +67,9 @@ def main() -> None:
             raise ValueError("invalid unmapped source gripper angle metadata")
         gripper_q_range = 0.01
     else:
-        if gripper_mapping.get("robot_open_width_mm") != 20.0:
-            raise ValueError("dataset must use a 0..20 mm gripper width")
+        width = float(gripper_mapping.get("robot_open_width_mm", 0))
+        if not np.isfinite(width) or width <= 0:
+            raise ValueError("dataset must declare a positive gripper width")
         gripper_q_range = 0.1
     min_q_range = np.array([*MIN_TCP_Q_RANGE, gripper_q_range], dtype=np.float64)
 

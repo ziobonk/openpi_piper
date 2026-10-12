@@ -852,6 +852,8 @@ class PiperEEFInference:
         port: int = 8000,
         can_name: str = "can0",
         rs2_base_serial: Optional[str] = None,
+        rs2_wrist_serial: Optional[str] = None,
+        wrist_rs_size: Optional[tuple[int, int]] = None,
         cv_base_id: Optional[int] = None,
         cv_wrist_id: Optional[int] = None,
         wrist_exposure: Optional[float] = None,
@@ -974,16 +976,18 @@ class PiperEEFInference:
         self._policy_host = host
         self._policy_port = port
 
-        # 相机: 基座 = RealSense (D435i)，腕部 = USB 摄像头 (OpenCV)
+        # 相机: 基座 = RealSense (D435i)，腕部 = RealSense 或 USB 摄像头
         self._camera = create_cameras(
             base_serial=rs2_base_serial,
+            wrist_serial=rs2_wrist_serial,
             base_rs_size=base_rs_size,
+            wrist_rs_size=wrist_rs_size,
             base_cv_id=cv_base_id,
             wrist_cv_id=cv_wrist_id,
             wrist_cv_exposure=wrist_exposure,
         )
         self._has_base_cam = bool(rs2_base_serial or cv_base_id is not None)
-        self._has_wrist_cam = cv_wrist_id is not None
+        self._has_wrist_cam = bool(rs2_wrist_serial or cv_wrist_id is not None)
 
         # 状态
         self._input_queue: queue.Queue[str] = queue.Queue()
@@ -1946,6 +1950,8 @@ def _parse_args(parser=None, argv=None):
     p.add_argument("--port", type=int, default=6006, help="策略服务器端口 (默认: 6006)")
     p.add_argument("--can_name", default="can0", help="CAN 端口名称 (默认: can0)")
     p.add_argument("--rs2_base", default=None, help="D435i 基座相机序列号")
+    p.add_argument("--rs2_wrist", default=None, help="D435i 腕部相机序列号（与 --usb_wrist 二选一）")
+    p.add_argument("--wrist_rs_size", type=int, nargs=2, default=None, metavar=("WIDTH", "HEIGHT"))
     p.add_argument("--usb_wrist", type=int, default=None, help="USB 腕部相机 OpenCV 设备 ID (默认: None)")
     p.add_argument(
         "--wrist_exposure",
@@ -2225,6 +2231,8 @@ def main(args=None):
         port=args.port,
         can_name=args.can_name,
         rs2_base_serial=args.rs2_base,
+        rs2_wrist_serial=args.rs2_wrist,
+        wrist_rs_size=tuple(args.wrist_rs_size) if args.wrist_rs_size is not None else None,
         base_rs_size=tuple(args.base_rs_size),
         cv_base_id=args.cam_ids[0] if len(args.cam_ids) > 0 else None,
         cv_wrist_id=args.usb_wrist

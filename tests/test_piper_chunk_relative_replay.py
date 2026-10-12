@@ -140,3 +140,50 @@ def test_slow_replay_sends_interpolated_tcp_commands(monkeypatch):
     assert len(sent) == 4
     np.testing.assert_allclose([action[0] for action in sent], [0.4025, 0.405, 0.4075, 0.41])
     np.testing.assert_allclose(sleeps, [0.05] * 4)
+
+
+def test_piper_sdk_replay_uses_recorded_tcp_offset_and_native_gripper(monkeypatch):
+    from types import SimpleNamespace
+
+    from examples.piper.data_tools import replay_picodual_lerobot as replay
+    from examples.piper.runtime import inference_eef as eef
+
+    actions = _actions()[:2]
+    original_offset = eef.GRIPPER_TCP_OFFSET_M.copy()
+    observed = {}
+
+    class Robot:
+        def enable(self, *, speed_pct):
+            return True
+
+        def get_eef_pose(self):
+            return actions[0, :6].copy()
+
+        def execute_action(self, action):
+            observed["sent"] = action.copy()
+
+    def build(args, module):
+        observed["port"] = args.gripper_port
+        observed["offset"] = module.GRIPPER_TCP_OFFSET_M.copy()
+        return Robot()
+
+    monkeypatch.setattr(replay, "load_chunk_relative_episode", lambda *_: (
+        {"fps": 20, "source_kind": "piper_sdk_read_only", "tcp_offset_m": [0, 0, 0],
+         "gripper_mapping": {"robot_open_width_mm": 70}}, None, 0, {0: 2}, actions,
+    ))
+    monkeypatch.setattr(replay, "_validate_trajectory", lambda *_: None)
+    monkeypatch.setattr(replay, "_build_gripper_and_robot", build)
+    monkeypatch.setattr(replay.time, "sleep", lambda *_: None)
+    args = SimpleNamespace(
+        data_dir="unused", episode=0, info_only=False, adapt_dataset_tcp=False,
+        action_horizon=50, exec_horizon=1, gripper_open_width_mm=None,
+        gripper_port="/dev/ttyACM1", control_gripper=True, dry_run=False,
+        speed_pct=30, speed=1.0, yes=True, step=False, readback=False, workspace=None,
+    )
+    try:
+        replay.replay_chunk_relative(args)
+    finally:
+        eef.GRIPPER_TCP_OFFSET_M[:] = original_offset
+    assert observed["port"] == ""
+    np.testing.assert_array_equal(observed["offset"], [0, 0, 0])
+    assert "sent" in observed

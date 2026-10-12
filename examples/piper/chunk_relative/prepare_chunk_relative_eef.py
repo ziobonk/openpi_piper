@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Create a gripper-only-state dataset from PICO or UDP measured TCP data.
+"""Create a gripper-only-state dataset from absolute measured TCP data.
 
-The stored actions remain absolute PICO World TCP poses. At training time,
+The stored actions remain absolute TCP poses in their source coordinate frame. At training time,
 ChunkRelativeEEFActions converts each sampled action window using its own first
-pose as the base. The gripper column is mapped to the robot's physical width
-range, so inference needs no source dataset or gripper calibration statistics.
+pose as the base. Piper SDK and UDP measured gripper widths stay in millimetres;
+PICO gripper values are mapped to the robot's physical width range.
 """
 
 import argparse
@@ -50,13 +50,19 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0, so
             or info.get("coordinate_transform_applied") is not False
         ):
             raise ValueError("source must contain untransformed PICO World absolute TCP poses")
-    elif source_kind == "udp":
+    elif source_kind in ("udp", "piper_sdk"):
         if (
             info.get("robot_type") != "piper_eef"
             or info.get("pose_coordinate_frame") != "robot_base_tcp"
             or info.get("coordinate_transform_applied") is not False
         ):
-            raise ValueError("UDP source must be a Piper EEF recording in robot_base_tcp coordinates")
+            raise ValueError("source must be a Piper EEF recording in robot_base_tcp coordinates")
+        if source_kind == "piper_sdk":
+            if info.get("source_kind") != "piper_sdk_raw" or info.get("features", {}).get("flange_pose", {}).get("shape") != [6]:
+                raise ValueError("expected a raw Piper SDK dataset with flange_pose")
+            robot_open_width_mm = float(info["gripper_mapping"]["robot_open_width_mm"])
+            if not np.isfinite(robot_open_width_mm) or robot_open_width_mm <= 0:
+                raise ValueError("invalid raw Piper SDK gripper width")
     else:
         raise ValueError(f"unknown source kind: {source_kind}")
     if info["features"]["state"]["shape"] != [7] or info["features"]["actions"]["shape"] != [7]:
@@ -66,8 +72,8 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0, so
     grip_max = float(source_stats["state"]["max"][6])
     if not np.isfinite([grip_min, grip_max]).all() or (source_kind == "pico" and grip_max <= grip_min):
         raise ValueError("source gripper range is invalid")
-    if source_kind == "udp" and (grip_min < -1e-4 or grip_max > robot_open_width_mm + 1e-4):
-        raise ValueError("UDP gripper widths must be within 0..robot_open_width_mm")
+    if source_kind in ("udp", "piper_sdk") and (grip_min < -1e-4 or grip_max > robot_open_width_mm + 1e-4):
+        raise ValueError("source gripper widths must be within 0..robot_open_width_mm")
     parquet_files = sorted((source / "data").rglob("*.parquet"))
     if not parquet_files:
         raise FileNotFoundError(f"no parquet files under {source / 'data'}")
@@ -91,7 +97,7 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0, so
                 raise ValueError(f"invalid state/action shapes in {path}")
             if not np.isfinite(states).all() or not np.isfinite(actions).all():
                 raise ValueError(f"nonfinite state/action in {path}")
-            if source_kind == "pico" and not np.allclose(states, actions, rtol=0, atol=1e-6):
+            if source_kind in ("pico", "piper_sdk") and not np.allclose(states, actions, rtol=0, atol=1e-6):
                 raise ValueError(f"source must have same-frame state/actions: {path}")
             episode_ids = set(table["episode_index"].to_pylist())
             if len(episode_ids) != 1:
@@ -101,7 +107,7 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0, so
                 grip_mm = np.clip((states[:, 6] - grip_min) / (grip_max - grip_min), 0, 1) * robot_open_width_mm
                 new_actions = actions.copy()
             else:
-                # UDP commands follow the observation; measured states form the same-frame trajectory.
+                # UDP commands follow the observation; SDK state/actions already match the frame.
                 grip_mm = states[:, 6].copy()
                 new_actions = states.copy()
             new_states = grip_mm[:, None].astype(np.float32)
@@ -120,10 +126,10 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0, so
             raise ValueError(f"frame count mismatch: {total_frames} != {info['total_frames']}")
 
         info["robot_type"] = "piper_chunk_relative_eef"
-        info["source_kind"] = source_kind
+        info["source_kind"] = "piper_sdk_read_only" if source_kind == "piper_sdk" else source_kind
         info["source_action_semantics"] = (
-            "measured same-frame TCP state; UDP commanded actions were not used"
-            if source_kind == "udp"
+            "measured same-frame TCP state; UDP commanded actions were not used" if source_kind == "udp"
+            else "same-frame Piper SDK measured TCP actions" if source_kind == "piper_sdk"
             else "same-frame PICO TCP actions"
         )
         info["features"]["state"] = {"dtype": "float32", "shape": [1], "names": ["gripper_width_mm"]}
@@ -145,6 +151,7 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0, so
             "source_min": grip_min,
             "source_max": grip_max,
             "robot_open_width_mm": robot_open_width_mm,
+            "applied_to_dataset": True,
         }
         (staging / "meta/info.json").write_text(json.dumps(info, indent=2) + "\n")
         (staging / "meta/stats.json").write_text(
@@ -173,7 +180,7 @@ def main() -> None:
     parser.add_argument("--source", type=Path, default=Path("local/datasets/pick_cube_raw_action"))
     parser.add_argument("--output", type=Path, default=Path("local/datasets/pick_cube_chunk_relative"))
     parser.add_argument("--robot-open-width-mm", type=float, default=20.0)
-    parser.add_argument("--source-kind", choices=("pico", "udp"), default="pico")
+    parser.add_argument("--source-kind", choices=("pico", "udp", "piper_sdk"), default="pico")
     args = parser.parse_args()
     convert(args.source, args.output, robot_open_width_mm=args.robot_open_width_mm, source_kind=args.source_kind)
 

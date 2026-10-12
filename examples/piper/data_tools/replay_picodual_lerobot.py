@@ -88,8 +88,9 @@ def load_chunk_relative_episode(data_dir: str, episode: int | None):
 
     root = Path(data_dir)
     info = json.loads((root / "meta/info.json").read_text())
-    if info.get("robot_type") != "piper_chunk_relative_eef":
-        raise ValueError("expected a piper_chunk_relative_eef dataset")
+    raw_piper_sdk = info.get("robot_type") == "piper_eef" and info.get("source_kind") == "piper_sdk_raw"
+    if info.get("robot_type") != "piper_chunk_relative_eef" and not raw_piper_sdk:
+        raise ValueError("expected a chunk-relative or raw Piper SDK EEF dataset")
     if info.get("pose_coordinate_frame") not in ("pico_world_tcp", "robot_base_tcp", "source_tracking_world_tcp") or info.get("coordinate_transform_applied") is not False:
         raise ValueError("expected untransformed absolute TCP actions in a supported frame")
     episodes = [json.loads(line) for line in (root / "meta/episodes.jsonl").read_text().splitlines() if line]
@@ -105,11 +106,14 @@ def load_chunk_relative_episode(data_dir: str, episode: int | None):
     frame = pd.read_parquet(path).sort_values("frame_index").reset_index(drop=True)
     actions = np.stack(frame["actions"].values).astype(np.float64)
     gripper = np.stack(frame["state"].values).astype(np.float64)
-    if actions.shape != (lengths[selected], 7) or gripper.shape != (lengths[selected], 1):
+    expected_state_shape = (lengths[selected], 7 if raw_piper_sdk else 1)
+    if actions.shape != (lengths[selected], 7) or gripper.shape != expected_state_shape:
         raise ValueError(f"invalid action/state shape: {actions.shape}, {gripper.shape}")
     if not np.isfinite(actions).all() or not np.isfinite(gripper).all():
         raise ValueError("nonfinite action or state in dataset")
-    if not np.allclose(actions[:, 6], gripper[:, 0], atol=1e-4):
+    if raw_piper_sdk and not np.allclose(actions, gripper, atol=1e-6):
+        raise ValueError("raw Piper SDK state/actions must contain identical same-frame TCP feedback")
+    if not raw_piper_sdk and not np.allclose(actions[:, 6], gripper[:, 0], atol=1e-4):
         raise ValueError("same-frame action gripper and state gripper disagree")
     return info, frame, selected, lengths, actions
 
@@ -193,6 +197,12 @@ def replay_chunk_relative(args) -> None:
         args.gripper_open_width_mm = expected_width
     elif args.control_gripper and not np.isclose(args.gripper_open_width_mm, expected_width):
         raise ValueError(f"dataset gripper width is 0..{expected_width:g} mm; --gripper_open_width_mm differs")
+    native_piper_dataset = info.get("source_kind") in {"piper_sdk_raw", "piper_sdk_read_only"}
+    if native_piper_dataset:
+        offset = np.asarray(info.get("tcp_offset_m"), dtype=np.float64)
+        if offset.shape != (3,) or not np.isfinite(offset).all() or np.linalg.norm(offset) > 1.0:
+            raise ValueError("Piper SDK dataset requires a valid tcp_offset_m in meta/info.json")
+        print(f"[Replay] Piper SDK dataset TCP offset: {offset.tolist()} m; native Piper gripper")
     ideal = _episode_relative_actions(actions)
     _validate_trajectory(ideal, args)
     starts = range(0, len(actions) - 1, args.exec_horizon)
@@ -208,6 +218,10 @@ def replay_chunk_relative(args) -> None:
         return
 
     from examples.piper.runtime import inference_eef as eef
+
+    if native_piper_dataset:
+        eef.GRIPPER_TCP_OFFSET_M[:] = offset
+        args.gripper_port = ""  # the recording used the Piper native gripper
 
     robot = _build_gripper_and_robot(args, eef)
     if not robot.enable(speed_pct=args.speed_pct):
@@ -500,7 +514,10 @@ def main() -> None:
         parser.error("--speed 必须大于 0")
 
     info_path = Path(args.data_dir) / "meta/info.json"
-    if info_path.exists() and json.loads(info_path.read_text()).get("robot_type") == "piper_chunk_relative_eef":
+    if info_path.exists() and (
+        (info := json.loads(info_path.read_text())).get("robot_type") == "piper_chunk_relative_eef"
+        or (info.get("robot_type") == "piper_eef" and info.get("source_kind") == "piper_sdk_raw")
+    ):
         replay_chunk_relative(args)
         return
     if args.gripper_open_width_mm is None:
