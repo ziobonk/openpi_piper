@@ -100,6 +100,35 @@ uv run scripts/serve_policy.py --port 6006 policy:checkpoint \
   --policy.dir=checkpoints/pi05_piper_pick_place_chunk_relative/pick_place/<step>
 ```
 
+### 用数据集图像做离线验证
+
+在连接 Piper CAN、可访问训练后策略服务的机器上运行。脚本只从 Piper SDK
+**读取一次当前 TCP**，不使能机械臂，不下发运动或夹爪命令。基座和腕部图像来自
+所选 episode 的两个 MP4；模型的 1D 夹爪状态取同帧数据集编码器角度，
+任务文本取数据集 `meta/tasks.jsonl`。它不会读取现场相机或 DM 夹爪。
+
+```bash
+uv run examples/piper/chunk_relative/offline_validate_pick_place.py \
+  --dataset local/datasets/pick_place_chunk_relative \
+  --episode 3 --host localhost --port 6006 --can-name can0 \
+  --tcp-offset-m 0 0 0.22 --steps 3 --max-frames 100 \
+  --gif local/runs/outputs/pick_place_ep3_policy.gif --no-show
+```
+
+去掉 `--no-show` 可同时打开可拖动查看的可视化窗口；只看窗口时可省略
+`--gif`。`--max-frames 0` 处理整集，默认前 100 帧；`--steps` 与真机推理
+一样，表示每次模型查询后采用的未来动作数，动作 0 是同帧基准，会跳过。
+`--tcp-offset-m` 必须是现场测得的 J6 法兰到 TCP 的平移，默认 0/0/0.22 m。
+脚本保存同名 `.npz`，包含 Piper 起点、数据集 TCP、锚定后的数据集参考轨迹、
+预测的虚拟 TCP 轨迹、查询帧索引和位置差。GIF 同时显示模型查询使用的两路
+数据集图像、两条 Robot Base 轨迹和位置差。
+
+参考轨迹按 `T_robot_start @ inv(T_dataset[0]) @ T_dataset[t]` 绘制。
+预测轨迹在每次查询时，以**软件中的上一预测 TCP** 作为新块起点，按
+`T_virtual @ D[k]` 推进；机器人并未执行这些动作，故曲线表示离线规划轨迹，
+不表示实测跟踪效果。离线输入的夹爪状态仍是数据集真值，闭环只作用于
+虚拟 TCP。两端工具 TCP 轴和原点应一致，才能解释两条轨迹的位置差。
+
 机器人端使用准备后数据集的 `meta/info.json` 读取角度端点和 30 Hz 频率：
 
 ```bash
