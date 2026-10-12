@@ -56,6 +56,10 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=3, help="future steps per query, 1..49")
     parser.add_argument("--tcp-offset-m", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"))
     parser.add_argument("--gripper-port", default=inference_eef.GRIPPER_PORT, help="DM USB2CAN serial port")
+    parser.add_argument(
+        "--visualize-trajectory", action=argparse.BooleanOptionalAction, default=True,
+        help="show upcoming TCP targets in Robot Base during inference (default: on)",
+    )
     args = parser.parse_args()
     if not 1 <= args.steps <= 49 or not 1 <= args.port <= 65535:
         parser.error("steps must be 1..49 and port 1..65535")
@@ -84,6 +88,8 @@ def main() -> None:
     ]
     if args.tcp_offset_m is not None:
         runtime_argv.extend(("--tcp_offset_m", *(str(value) for value in args.tcp_offset_m)))
+    if args.visualize_trajectory:
+        runtime_argv.append("--visualize_trajectory")
     print(f"[pick_place] encoder {closed:.6f}..{opened:.6f} rad -> Piper 0..{open_width_mm:g} mm at inference")
     inference_eef.main(inference_eef._parse_args(argv=runtime_argv))  # noqa: SLF001
 

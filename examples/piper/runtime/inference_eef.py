@@ -131,6 +131,7 @@ except ImportError:
 
 # --- 相机工具 (支持 RealSense D435i/D405 和 OpenCV) ---
 from camera_utils import create_cameras
+from live_trajectory_view import LiveTrajectoryView
 
 from examples.piper.transforms.inference_action_transform import pico_relative_actions_to_tcp_relative
 from examples.piper.transforms.inference_action_transform import tcp_relative_actions_to_pico_relative
@@ -858,6 +859,7 @@ class PiperEEFInference:
         trajectory_log: Optional[str] = None,
         control_freq: float = CONTROL_FREQ,
         base_rs_size: tuple[int, int] = (1280, 720),
+        visualize_trajectory: bool = False,
     ):
         self._action_horizon = action_horizon
         self._exec_horizon = exec_horizon
@@ -870,6 +872,9 @@ class PiperEEFInference:
         if model_action_frame not in {"robot_absolute", "chunk_relative", "tcp", "pico", "pico_absolute", "tcp_absolute"}:
             raise ValueError(f"无效 model_action_frame: {model_action_frame!r}")
         self._model_action_frame = model_action_frame
+        if visualize_trajectory and model_action_frame != "chunk_relative":
+            raise ValueError("live trajectory visualization currently requires chunk_relative actions")
+        self._trajectory_view = LiveTrajectoryView() if visualize_trajectory else None
         self._legacy_pick_cube_tcp = bool(legacy_pick_cube_tcp)
         if self._model_action_frame in {"chunk_relative", "pico", "pico_absolute", "tcp_absolute"} and self._legacy_pick_cube_tcp:
             raise ValueError(
@@ -1015,6 +1020,7 @@ class PiperEEFInference:
             "轨迹记录:       "
             + (str(self._trajectory_recorder.path) if self._trajectory_recorder is not None else "关闭")
         )
+        print(f"即将执行的 TCP 轨迹窗口: {'开启' if self._trajectory_view is not None else '关闭'}")
         print(
             f"控制频率:       {self._control_freq:g} Hz "
             f"(期望动作块 {self._action_horizon} 步, 每块最多执行 {self._exec_horizon} 步)"
@@ -1105,6 +1111,7 @@ class PiperEEFInference:
 
             if not self._inferring:
                 self._display_cameras()
+                self._display_trajectory()
                 time.sleep(0.01)
                 continue
 
@@ -1146,6 +1153,9 @@ class PiperEEFInference:
                     self._model_gripper_to_runtime(predicted_gripper_mm) * self._gripper_prediction_scale
                 )
                 gripper_mm = self._gripper_command(scaled_gripper_mm)
+
+                # Show the selected target before it is sent to the robot.
+                self._display_trajectory(idx, gripper_mm)
 
                 if cur_pose is None:
                     cur_pose = self._robot.get_eef_pose()
@@ -1262,11 +1272,19 @@ class PiperEEFInference:
             cv2.imshow("Piper EEF Inference", vis[..., ::-1])  # RGB → BGR
             cv2.waitKey(1)
 
+    def _display_trajectory(self, next_step: int = 0, gripper_mm: float | None = None) -> None:
+        if self._trajectory_view is None:
+            return
+        cv2.imshow(LiveTrajectoryView.WINDOW, self._trajectory_view.render(next_step, gripper_mm))
+        cv2.waitKey(1)
+
     def _query_policy(self):
         # A failed query must never replay the previous chunk against a newly
         # captured TCP base.
         self._action_cache = None
         self._chunk_tcp_base = None
+        if self._trajectory_view is not None:
+            self._trajectory_view.clear()
         try:
             obs = self._build_observation()
             result = self._policy_client.infer(obs)
@@ -1279,6 +1297,8 @@ class PiperEEFInference:
                 [self._model_gripper_to_runtime(float(value)) for value in grip]
             ) * self._gripper_prediction_scale
             execute_steps = min(self._exec_horizon, self._action_cache.shape[0])
+            if self._trajectory_view is not None:
+                self._trajectory_view.set_chunk(self._chunk_tcp_base, self._action_cache, execute_steps)
             executed_scaled_grip = scaled_grip[:execute_steps]
             mode_info = ""
             if self._binary_gripper:
@@ -1306,6 +1326,8 @@ class PiperEEFInference:
         except Exception as e:
             self._action_cache = None
             self._chunk_tcp_base = None
+            if self._trajectory_view is not None:
+                self._trajectory_view.clear()
             print(f"[Policy] 查询失败: {e}")
             time.sleep(1)
             try:
@@ -1366,6 +1388,8 @@ class PiperEEFInference:
             self._inferring = False
             self._action_cache = None
             self._cache_step = 0
+            if self._trajectory_view is not None:
+                self._trajectory_view.clear()
             self._save_trajectory_log()
         elif cmd == "quit":
             self._running = False
@@ -1374,6 +1398,8 @@ class PiperEEFInference:
             self._inferring = False
             self._action_cache = None
             self._cache_step = 0
+            if self._trajectory_view is not None:
+                self._trajectory_view.clear()
             self._save_trajectory_log()
             print(f"[Control] 暂停推理并手动开爪 (command={self._gripper_open_width_mm:.1f}mm)")
             self._robot.send_gripper_command(self._gripper_open_width_mm)
@@ -1388,6 +1414,8 @@ class PiperEEFInference:
                 self._trajectory_recorder.begin_episode(self._robot_tcp0)
             self._action_cache = None
             self._cache_step = 0
+            if self._trajectory_view is not None:
+                self._trajectory_view.clear()
             self._inferring = was_inferring
 
     def _keyboard_listener(self):
@@ -1943,6 +1971,10 @@ def _parse_args(parser=None, argv=None):
         ),
     )
     p.add_argument(
+        "--visualize_trajectory", action="store_true",
+        help="真机 chunk_relative 推理时实时显示即将执行的 Robot Base TCP 轨迹",
+    )
+    p.add_argument(
         "--max_pos_speed",
         type=float,
         default=DEFAULT_MAX_POS_SPEED,
@@ -2181,6 +2213,7 @@ def main(args=None):
         model_gripper_range=model_gripper_range,
         trajectory_log=args.trajectory_log,
         control_freq=args.control_freq,
+        visualize_trajectory=args.visualize_trajectory,
     )
     inference.run()
 

@@ -93,6 +93,7 @@ def test_failed_policy_query_clears_old_chunk_and_tcp_anchor(monkeypatch):
     client = eef.PiperEEFInference.__new__(eef.PiperEEFInference)
     client._action_cache = np.ones((3, 7), dtype=np.float32)
     client._chunk_tcp_base = np.ones(6)
+    client._trajectory_view = None
     client._model_action_frame = "chunk_relative"
     client._inferring = True
     client._build_observation = lambda: {"prompt": "test"}

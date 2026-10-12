@@ -150,6 +150,14 @@ uv run examples/piper/chunk_relative/infer_pick_place.py \
 为基准。命令可加 `--tcp-offset-m X Y Z` 指定实测 J6 到 TCP 偏移；
 `0 0 0` 表示以 J6 法兰原点为 TCP。数据集 TCP 轴、相机视角和真实工具定义应与推理现场一致。
 
+`infer_pick_place.py` 默认打开 `Piper Planned TCP` 窗口。每次模型返回动作块后，
+窗口按当次观测的 TCP 锚点计算**本块即将执行的 `--steps` 个目标**，显示
+Robot Base 下的 XY、XZ、YZ 投影。绿色是当次观测的 TCP，蓝线是尚待执行的
+目标，灰线是本块已下发的目标，红点是下一条指令；顶部同时显示目标位置、
+RPY 姿态和虚拟夹爪开度。红点在每条指令下发前更新，新的模型动作块会重新
+锚定和绘制。窗口展示的是**下发目标**，不代表机械臂实测 TCP 跟踪轨迹。
+无图形桌面或无需轨迹窗口时加 `--no-visualize-trajectory`。
+
 坐标链核对：训练目标为 `D[k] = inv(T_source_tcp[0]) @ T_source_tcp[k]`；
 推理跳过同帧第 0 步，并用观测时的实测机器人 TCP 计算
 `T_robot_target[k] = T_robot_observed @ D[k]`。Piper SDK 提供法兰位姿，
