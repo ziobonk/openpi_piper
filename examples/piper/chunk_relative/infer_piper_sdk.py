@@ -49,9 +49,19 @@ def main() -> None:
     wrist.add_argument("--wrist-rs-serial", help="wrist D435i serial")
     wrist.add_argument("--wrist-usb", type=int, help="wrist USB/OpenCV device index")
     parser.add_argument("--steps", type=int, default=3)
+    parser.add_argument("--interp-freq", type=float, default=None,
+                        help="enable TCP interpolation at this command frequency in Hz")
+    parser.add_argument("--max-pos-speed", type=float, default=0.25,
+                        help="interpolation TCP translation speed limit in m/s (default: 0.25)")
+    parser.add_argument("--max-rot-speed", type=float, default=0.6,
+                        help="interpolation TCP rotation speed limit in rad/s (default: 0.6)")
     args = parser.parse_args()
     if not 1 <= args.steps <= 49 or not 1 <= args.port <= 65535:
         parser.error("steps must be 1..49 and port 1..65535")
+    if args.interp_freq is not None and (not np.isfinite(args.interp_freq) or args.interp_freq <= 0):
+        parser.error("interp-freq must be positive and finite")
+    if not np.isfinite([args.max_pos_speed, args.max_rot_speed]).all() or min(args.max_pos_speed, args.max_rot_speed) <= 0:
+        parser.error("max-pos-speed and max-rot-speed must be positive and finite")
     fps, width, base_size, wrist_size, prompt, offset = dataset_settings(args.dataset)
     runtime_argv = [
         "--host", args.host, "--port", str(args.port), "--can_name", args.can_name,
@@ -65,6 +75,12 @@ def main() -> None:
     ]
     runtime_argv.extend(("--rs2_wrist", args.wrist_rs_serial) if args.wrist_rs_serial else
                         ("--usb_wrist", str(args.wrist_usb)))
+    if args.interp_freq is not None:
+        runtime_argv.extend((
+            "--interp_freq", str(args.interp_freq),
+            "--max_pos_speed", str(args.max_pos_speed),
+            "--max_rot_speed", str(args.max_rot_speed),
+        ))
     inference_eef.main(inference_eef._parse_args(argv=runtime_argv))  # noqa: SLF001
 
 

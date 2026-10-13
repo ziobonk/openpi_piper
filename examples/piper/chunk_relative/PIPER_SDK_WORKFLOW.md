@@ -15,7 +15,15 @@
   --task "pick up the cube" --base-camera 112222070761 \
   --wrist-rs-serial 231122071797 --tcp-offset-m 0 0 0
 
-# 腕部使用 D435i 时改用：--wrist-rs-serial <wrist_d435i_serial>
+# 腕部使用 USB 相机时改用：--wrist-usb <设备编号>
+```
+
+默认直接发送每个模型 TCP 目标。要在目标之间插值，可加 `--interp-freq 50`；位置线性插值、姿态 SLERP，并分别以 `--max-pos-speed`（m/s，默认 0.25）和 `--max-rot-speed`（rad/s，默认 0.6）限制速度。例如：
+
+```bash
+.venv/bin/python examples/piper/chunk_relative/infer_piper_sdk.py \
+  --base-camera 112222070761 --wrist-rs-serial 231122071797 \
+  --steps 3 --interp-freq 50 --max-pos-speed 0.2 --max-rot-speed 0.4
 ```
 
 终端或预览窗口按 `c` 开始、`s` 保存、`d` 丢弃、`q` 退出。反馈或图像过期时，当前 episode 会自动保存并暂停录制。无桌面可加 `--no-preview`。默认**原始**数据集路径是 `local/datasets/piper_sdk_raw_eef`，默认 20 Hz、全局 1280×720、腕部 640×480、原生夹爪 0–70 mm。夹爪物理行程不同可用 `--gripper-open-width-mm` 修改；追加录制时帧率、图像尺寸、TCP 偏移和夹爪行程必须一致。每集建议不少于模型的 50 帧动作窗口。
@@ -85,7 +93,8 @@ uv run scripts/serve_policy.py --port 6006 policy:checkpoint \
 
 ```bash
 .venv/bin/python examples/piper/chunk_relative/infer_piper_sdk.py \
-  --base-camera <global_d435i_serial> --wrist-usb 0 --steps 3
+  --base-camera 112222070761 \
+  --wrist-rs-serial 231122071797 --steps 3
 
 # 腕部使用 D435i 时改用：--wrist-rs-serial <wrist_d435i_serial>
 ```

@@ -1,5 +1,6 @@
 """Read-only Piper SDK collector feedback behavior without robot hardware."""
 
+import sys
 from types import SimpleNamespace
 
 import cv2
@@ -8,6 +9,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from examples.piper.chunk_relative import collect_piper_sdk
+from examples.piper.chunk_relative import infer_piper_sdk
 from examples.piper.chunk_relative.infer_piper_sdk import dataset_settings
 from examples.piper.chunk_relative.prepare_chunk_relative_eef import convert
 from examples.piper.collection.collect_eef_udp import PickPlaceWriter
@@ -98,6 +100,23 @@ def test_missing_gripper_feedback_is_identified(monkeypatch):
     with pytest.raises(RuntimeError, match=r"gripper: never received.*CAN: 100.0 fps"):
         feedback.read()
     feedback.close()
+
+
+def test_inference_wrapper_enables_interpolation(monkeypatch):
+    monkeypatch.setattr(infer_piper_sdk, "dataset_settings", lambda _: (
+        20.0, 70.0, (1280, 720), (640, 480), "pick up the cube", np.zeros(3),
+    ))
+    received = []
+    monkeypatch.setattr(infer_piper_sdk.inference_eef, "main", received.append)
+    monkeypatch.setattr(sys, "argv", [
+        "infer_piper_sdk.py", "--base-camera", "base-serial", "--wrist-usb", "0",
+        "--interp-freq", "50", "--max-pos-speed", "0.2", "--max-rot-speed", "0.4",
+    ])
+    infer_piper_sdk.main()
+    assert len(received) == 1
+    assert received[0].interp_freq == 50
+    assert received[0].max_pos_speed == 0.2
+    assert received[0].max_rot_speed == 0.4
 
 
 def test_delete_last_raw_episode_updates_counts_and_keeps_prior_episode(tmp_path):
