@@ -106,3 +106,48 @@ def test_next_frame_tcp_becomes_same_frame_and_gripper_stays_radians(tmp_path, m
     assert json.loads((retagged / "meta/tasks.jsonl").read_text())["task"] == new_prompt
     assert json.loads((retagged / "meta/episodes.jsonl").read_text())["tasks"] == [new_prompt]
     assert infer_pick_place.training_metadata(retagged)[-1] == new_prompt
+
+
+def test_tcp_only_dataset_uses_explicit_zero_gripper_placeholder(tmp_path):
+    source = tmp_path / "source"
+    output = tmp_path / "prepared"
+    (source / "meta").mkdir(parents=True)
+    (source / "data/chunk-000").mkdir(parents=True)
+    (source / "videos/chunk-000/observation.images.camera").mkdir(parents=True)
+    (source / "videos/chunk-000/observation.images.camera/episode_000000.mp4").write_bytes(b"video")
+    info = {
+        "robot_type": "lightumi", "fps": 30, "chunks_size": 1000,
+        "total_episodes": 1, "total_frames": 3, "total_videos": 1,
+        "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+        "features": {"action": {"shape": [9], "names": ["left_tcp_x_m", "left_tcp_y_m", "left_tcp_z_m", *ROTATION_NAMES]}},
+        "lightumi_conversion": {
+            "action": "next aligned absolute source-tracking-world TCP xyz + rotation-6D, without a gripper angle",
+            "rotation_6d": "columns_grouped:[r00,r10,r20,r01,r11,r21]",
+        },
+    }
+    (source / "meta/info.json").write_text(json.dumps(info))
+    (source / "meta/stats.json").write_text("{}")
+    (source / "meta/episodes.jsonl").write_text(json.dumps({"episode_index": 0, "length": 3}) + "\n")
+    (source / "meta/tasks.jsonl").write_text(json.dumps({"task_index": 0, "task": "touch the blocks"}) + "\n")
+    (source / "meta/episodes_stats.jsonl").write_text(json.dumps({"episode_index": 0, "stats": {}}) + "\n")
+    (source / "meta/lightumi_sources.jsonl").write_text(
+        json.dumps({"episode_index": 0, "frames": 3, "action_is_next_aligned_tcp": True, "last_action_repeated": True}) + "\n"
+    )
+    raw = np.array([
+        [1.0, 2, 3, 1, 0, 0, 0, 1, 0],
+        [1.1, 2, 3, 1, 0, 0, 0, 1, 0],
+        [1.1, 2, 3, 1, 0, 0, 0, 1, 0],
+    ], dtype=np.float32)
+    pq.write_table(pa.table({"frame_index": [0, 1, 2], "action": _fixed_list(raw)}), source / "data/chunk-000/episode_000000.parquet")
+
+    convert(source, output)
+    prepared = pq.read_table(output / "data/chunk-000/episode_000000.parquet")
+    actions = np.asarray(prepared["actions"].to_pylist())
+    states = np.asarray(prepared["state"].to_pylist())
+    np.testing.assert_allclose(actions[:, :3], [[1, 2, 3], [1, 2, 3], [1.1, 2, 3]])
+    np.testing.assert_array_equal(actions[:, 6], 0)
+    np.testing.assert_array_equal(states, 0)
+    prepared_info = json.loads((output / "meta/info.json").read_text())
+    assert prepared_info["gripper_mapping"]["available"] is False
+    assert prepared_info["features"]["state"]["shape"] == [1]
+    assert prepared_info["features"]["actions"]["shape"] == [7]

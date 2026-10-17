@@ -6,6 +6,7 @@
 
 完整训练流程、关键代码及归一化与推理细节见 [TRAINING_PIPELINE.md](TRAINING_PIPELINE.md)。UMI/lightumi UDP 遥操、采集、同帧转换与逐块回放见 [VALIDATION_PIPELINE.md](VALIDATION_PIPELINE.md)。
 `pick_place` 的 lightUMI 数据本地准备、服务器归一化与训练见 [PICK_PLACE_TRAINING.md](PICK_PLACE_TRAINING.md)。
+无夹爪编码器的 `local/datasets/test` 服务器训练见 [TEST_TRAINING.md](TEST_TRAINING.md)。
 训练后用数据集双路视频作为模型输入、读取当前 Piper TCP 作为轨迹起点，
 可用 `offline_validate_pick_place.py` 导出对比 GIF 或打开交互窗口；命令和
 结果含义见 [PICK_PLACE_TRAINING.md](PICK_PLACE_TRAINING.md#用数据集图像做离线验证)。

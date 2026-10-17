@@ -12,16 +12,17 @@ from openpi import transforms
 class ChunkRelativeEEFActions(transforms.DataTransformFn):
     """Convert absolute TCP targets to ``inv(T_actions[0]) @ T_actions[k]``.
 
-    The model state contains only the current gripper width. The first action
-    is aligned to that observation and becomes the identity pose. Gripper
-    targets remain absolute widths in millimetres. During inference there are
-    no input actions, so this transform only validates the state shape.
+    The model state has one scalar (gripper value or a zero placeholder). The
+    first action is aligned to that observation and becomes the identity pose.
+    The seventh action value remains absolute in the dataset's units. During
+    inference there are no input actions, so this transform only validates the
+    state shape.
     """
 
     def __call__(self, data: dict) -> dict:
         state = np.asarray(data["state"])
         if state.shape != (1,) or not np.isfinite(state).all():
-            raise ValueError(f"chunk-relative Piper state must be one finite gripper value, got {state.shape}")
+            raise ValueError(f"chunk-relative Piper state must be one finite scalar, got {state.shape}")
         if "actions" not in data:
             return data
 

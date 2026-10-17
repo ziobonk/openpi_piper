@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Prepare next-aligned lightUMI TCP data for same-frame chunk-relative training.
 
-The source encoder angle stays in radians. No robot gripper mapping is applied.
+An available encoder angle stays in radians. Datasets without an encoder use a
+zero placeholder for the required one-dimensional state and seventh action.
 """
 
 from __future__ import annotations
@@ -52,13 +53,20 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0, ta
 
     info = json.loads((source / "meta/info.json").read_text())
     features = info.get("features", {})
-    expected_actions = ["left_tcp_x_m", "left_tcp_y_m", "left_tcp_z_m", *ROTATION_NAMES, "gripper_angle_rad"]
-    if info.get("robot_type") != "lightumi" or features.get("action", {}).get("shape") != [10]:
-        raise ValueError("expected lightUMI 10D action dataset")
+    action_shape = features.get("action", {}).get("shape")
+    has_encoder = action_shape == [10]
+    expected_actions = ["left_tcp_x_m", "left_tcp_y_m", "left_tcp_z_m", *ROTATION_NAMES]
+    if has_encoder:
+        expected_actions.append("gripper_angle_rad")
+    if info.get("robot_type") != "lightumi" or action_shape not in ([9], [10]):
+        raise ValueError("expected lightUMI 9D/10D action dataset")
     if features["action"].get("names") != expected_actions:
         raise ValueError("unexpected lightUMI action column names")
-    if features.get("observation.state", {}).get("shape") != [1]:
-        raise ValueError("expected one source encoder angle in observation.state")
+    if has_encoder:
+        if features.get("observation.state", {}).get("shape") != [1]:
+            raise ValueError("expected one source encoder angle in observation.state")
+    elif "observation.state" in features:
+        raise ValueError("9D dataset must not declare an encoder state")
     conversion = info.get("lightumi_conversion", {})
     if (
         "next aligned absolute source-tracking-world TCP" not in conversion.get("action", "")
@@ -108,8 +116,11 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0, ta
             if not np.array_equal(np.asarray(table["frame_index"].to_pylist()), np.arange(count)):
                 raise ValueError(f"episode {episode} frame indices are not contiguous")
             raw_actions = np.asarray(table["action"].to_pylist(), dtype=np.float64)
-            encoder = np.asarray(table["observation.state"].to_pylist(), dtype=np.float64)
-            if raw_actions.shape != (count, 10) or encoder.shape != (count, 1):
+            encoder = (
+                np.asarray(table["observation.state"].to_pylist(), dtype=np.float64)
+                if has_encoder else np.zeros((count, 1), dtype=np.float64)
+            )
+            if raw_actions.shape != (count, action_shape[0]) or encoder.shape != (count, 1):
                 raise ValueError(f"episode {episode} has invalid action/state shape")
             if not np.isfinite(raw_actions).all() or not np.isfinite(encoder).all():
                 raise ValueError(f"episode {episode} has nonfinite action/state")
@@ -136,7 +147,7 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0, ta
         if len(states) != int(info["total_frames"]):
             raise ValueError("total frame count mismatch")
         grip_min, grip_max = float(states.min()), float(states.max())
-        if grip_max <= grip_min:
+        if has_encoder and grip_max <= grip_min:
             raise ValueError("source encoder angle has no variation")
         info["robot_type"] = "piper_chunk_relative_eef"
         info["source_kind"] = "lightumi"
@@ -148,20 +159,32 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0, ta
         )
         info["first_frame_tcp_fill"] = "next_frame_pose"
         info["action_pose_semantics"] = "same-frame absolute TCP; convert each sampled chunk by inv(T_actions[0]) @ T_actions[k]"
-        info["state_pose_semantics"] = "same-frame source encoder angle only, in radians"
-        info["gripper_mapping"] = {
-            "applied_to_dataset": False,
-            "source_unit": "rad",
-            "source_closed_rad": grip_min,
-            "source_open_rad": grip_max,
-            "larger_angle_means_open": True,
-            "robot_open_width_mm": robot_open_width_mm,
-            "mapping_stage": "inference",
-        }
-        info["features"]["state"] = {"dtype": "float32", "shape": [1], "names": ["gripper_angle_rad"]}
+        info["state_pose_semantics"] = (
+            "same-frame source encoder angle only, in radians" if has_encoder
+            else "constant zero placeholder; source encoder was unavailable"
+        )
+        info["gripper_mapping"] = (
+            {
+                "applied_to_dataset": False,
+                "source_unit": "rad",
+                "source_closed_rad": grip_min,
+                "source_open_rad": grip_max,
+                "larger_angle_means_open": True,
+                "robot_open_width_mm": robot_open_width_mm,
+                "mapping_stage": "inference",
+            }
+            if has_encoder else {
+                "available": False,
+                "applied_to_dataset": False,
+                "mapping_stage": "none",
+                "placeholder_value": 0.0,
+            }
+        )
+        state_name = "gripper_angle_rad" if has_encoder else "unobserved_gripper_placeholder"
+        info["features"]["state"] = {"dtype": "float32", "shape": [1], "names": [state_name]}
         info["features"]["actions"] = {
             "dtype": "float32", "shape": [7],
-            "names": ["tcp_x_m", "tcp_y_m", "tcp_z_m", "tcp_rx_rad", "tcp_ry_rad", "tcp_rz_rad", "gripper_angle_rad"],
+            "names": ["tcp_x_m", "tcp_y_m", "tcp_z_m", "tcp_rx_rad", "tcp_ry_rad", "tcp_rz_rad", state_name],
         }
         (staging / "meta/info.json").write_text(json.dumps(info, indent=2) + "\n")
         (staging / "meta/stats.json").write_text(
@@ -172,7 +195,10 @@ def convert(source: Path, output: Path, *, robot_open_width_mm: float = 20.0, ta
                 stream.write(json.dumps(episode_stats[episode]) + "\n")
         staging.rename(output)
         print(f"Wrote {len(states)} frames from {len(episodes)} episodes to {output}")
-        print(f"Source encoder angle stays in radians: {grip_min:.6f}..{grip_max:.6f}; mapping is deferred to inference")
+        if has_encoder:
+            print(f"Source encoder angle stays in radians: {grip_min:.6f}..{grip_max:.6f}; mapping is deferred to inference")
+        else:
+            print("No source encoder: state and action[6] are zero placeholders; gripper control cannot be learned")
     finally:
         if staging.exists():
             shutil.rmtree(staging)

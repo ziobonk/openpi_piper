@@ -58,7 +58,12 @@ def main() -> None:
         if info["features"][key]["shape"] != shape:
             raise ValueError(f"{key} must have shape {shape}")
     gripper_mapping = info.get("gripper_mapping", {})
-    if gripper_mapping.get("applied_to_dataset") is False:
+    unobserved_gripper = gripper_mapping.get("available") is False
+    if unobserved_gripper:
+        if gripper_mapping.get("placeholder_value") != 0.0 or gripper_mapping.get("mapping_stage") != "none":
+            raise ValueError("invalid unobserved gripper metadata")
+        gripper_q_range = 0.1
+    elif gripper_mapping.get("applied_to_dataset") is False:
         if (
             gripper_mapping.get("source_unit") != "rad"
             or gripper_mapping.get("larger_angle_means_open") is not True
@@ -88,6 +93,8 @@ def main() -> None:
             raise ValueError(f"invalid state/action shape in {path}")
         if not np.isfinite(states).all() or not np.isfinite(actions).all():
             raise ValueError(f"nonfinite state/action in {path}")
+        if unobserved_gripper and (np.any(states != 0) or np.any(actions[:, 6] != 0)):
+            raise ValueError(f"unobserved gripper placeholders must be zero in {path}")
         if len(actions) < 2:
             raise ValueError(f"episode is shorter than two frames: {path}")
 
