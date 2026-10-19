@@ -131,6 +131,7 @@ except ImportError:
 
 # --- 相机工具 (支持 RealSense D435i/D405 和 OpenCV) ---
 from camera_utils import create_cameras
+from inference_log import InferenceLog
 from live_trajectory_view import LiveTrajectory3DView, LiveTrajectoryView
 
 from examples.piper.transforms.inference_action_transform import pico_relative_actions_to_tcp_relative
@@ -600,6 +601,9 @@ class PiperEEFController:
         rz = int(round(euler[2] * RAD_TO_001DEG))
         self._piper.EndPoseCtrl(x, y, z, rx, ry, rz)
         self._last_command_euler_rad = euler
+        callback = getattr(self, "_end_pose_command_callback", None)
+        if callback is not None:
+            callback(np.asarray(pose, dtype=np.float64).copy(), (x, y, z, rx, ry, rz))
 
     def send_gripper_command(self, gripper_mm: float, effort: int = GRIPPER_EFFORT):
         """发送二值夹爪指令：0=全闭，最大值=全开。"""
@@ -884,6 +888,7 @@ class PiperEEFInference:
         model_state_value: Optional[float] = None,
         control_gripper: bool = True,
         trajectory_log: Optional[str] = None,
+        inference_log: Optional[str] = None,
         control_freq: float = CONTROL_FREQ,
         base_rs_size: tuple[int, int] = (1280, 720),
         visualize_trajectory: bool = False,
@@ -1027,6 +1032,12 @@ class PiperEEFInference:
         self._cache_step = 0
         self._robot_tcp0: Optional[np.ndarray] = None
         self._chunk_tcp_base: Optional[np.ndarray] = None
+        self._inference_log = None if inference_log is None else InferenceLog(inference_log)
+        self._trace_query_id: int | None = None
+        self._trace_execution_index: int | None = None
+        self._trace_command_context: tuple[int, int, int, int, int] | None = None
+        if self._inference_log is not None:
+            self._robot._end_pose_command_callback = self._record_sent_command
 
     def _runtime_pose_to_model_pose(self, pose: np.ndarray) -> np.ndarray:
         """Map a robot-TCP relative pose into the training pose frame."""
@@ -1110,6 +1121,8 @@ class PiperEEFInference:
         # 1. 使能机械臂
         if not self._robot.enable():
             self._robot.close_gripper_transport()
+            if self._inference_log is not None:
+                self._inference_log.close()
             return
         camera_started = False
         try:
@@ -1135,6 +1148,8 @@ class PiperEEFInference:
             print("\n[INFO] 中断信号，退出中...")
         finally:
             self._save_trajectory_log()
+            if self._inference_log is not None:
+                self._inference_log.close()
             if camera_started:
                 self._camera.stop()
             if self._trajectory_view is not None:
@@ -1231,7 +1246,11 @@ class PiperEEFInference:
                 if cur_pose is None:
                     cur_pose = self._robot.get_eef_pose()
                 command_time = time.monotonic()
-                self._send_eef_cmd(cur_pose, target_pose, gripper_mm, data_dt)
+                self._trace_execution_index = idx
+                try:
+                    self._send_eef_cmd(cur_pose, target_pose, gripper_mm, data_dt)
+                finally:
+                    self._trace_execution_index = None
                 if self._trajectory_view is not None:
                     self._trajectory_view.record_sent(target_pose)
                     if idx + 1 >= min(self._exec_horizon, self._action_cache.shape[0]):
@@ -1303,7 +1322,7 @@ class PiperEEFInference:
         插值模式: 位置线性 + 旋转 SLERP，线速度/角速度受 max_*_speed 限制。
         """
         if not self._use_interp:
-            self._robot.send_eef_command(target_pose)
+            self._send_logged_tcp_command(target_pose, 1, 1)
             self._robot.send_gripper_command(gripper_mm)
             time.sleep(data_dt)
             return
@@ -1322,10 +1341,38 @@ class PiperEEFInference:
 
         for i in range(1, n + 1):
             pose = _interp_pose(cur_pose, target_pose, i / n)
-            self._robot.send_eef_command(pose)
+            self._send_logged_tcp_command(pose, i, n)
             time.sleep(inner_dt)
 
         self._robot.send_gripper_command(gripper_mm)
+
+    def _send_logged_tcp_command(self, pose: np.ndarray, interpolation_index: int, interpolation_count: int) -> None:
+        query_id = getattr(self, "_trace_query_id", None)
+        action_index = getattr(self, "_trace_execution_index", None)
+        if getattr(self, "_inference_log", None) is not None:
+            if query_id is None or action_index is None:
+                raise RuntimeError("inference command has no logged policy query or action index")
+            model_index = action_index + (1 if self._model_action_frame in {"chunk_relative", "pico_absolute", "tcp_absolute"} else 0)
+            self._trace_command_context = (query_id, action_index, model_index, interpolation_index, interpolation_count)
+        try:
+            self._robot.send_eef_command(pose)
+        finally:
+            self._trace_command_context = None
+
+    def _record_sent_command(self, pose: np.ndarray, end_pose_ctrl: tuple[int, int, int, int, int, int]) -> None:
+        context = self._trace_command_context
+        if context is None:
+            return
+        query_id, action_index, model_index, interpolation_index, interpolation_count = context
+        self._inference_log.record_command(
+            query_id=query_id,
+            execution_index=action_index,
+            model_action_index=model_index,
+            interpolation_index=interpolation_index,
+            interpolation_count=interpolation_count,
+            tcp_pose=pose,
+            end_pose_ctrl=end_pose_ctrl,
+        )
 
     def _display_cameras(self):
         """将所有相机画面拼接显示。"""
@@ -1357,10 +1404,12 @@ class PiperEEFInference:
         # captured TCP base.
         self._action_cache = None
         self._chunk_tcp_base = None
+        self._trace_query_id = None
         if self._trajectory_view is not None:
             self._trajectory_view.clear()
         try:
             obs = self._build_observation()
+            observation_time_ns = time.time_ns()
             result = self._policy_client.infer(obs)
             actions = np.asarray(result["actions"], dtype=np.float32)
             if actions.ndim != 2 or actions.shape[0] == 0 or actions.shape[1] < 7 or not np.isfinite(actions).all():
@@ -1417,6 +1466,17 @@ class PiperEEFInference:
             except Exception:
                 print("[Policy] 重连失败，暂停推理")
                 self._inferring = False
+        else:
+            inference_log = getattr(self, "_inference_log", None)
+            if inference_log is not None:
+                self._trace_query_id = inference_log.record_query(
+                    obs,
+                    actions,
+                    tcp_anchor=self._chunk_tcp_base,
+                    execute_steps=execute_steps,
+                    first_action_skipped=self._model_action_frame in {"chunk_relative", "pico_absolute", "tcp_absolute"},
+                    observation_time_ns=observation_time_ns,
+                )
 
     def _build_observation(self) -> dict:
         """构建与训练数据同坐标系的当前观测。"""
@@ -1466,6 +1526,8 @@ class PiperEEFInference:
                 self._robot_tcp0 = self._robot.get_eef_pose().astype(np.float64)
                 if self._trajectory_recorder is not None:
                     self._trajectory_recorder.begin_episode(self._robot_tcp0)
+                if getattr(self, "_inference_log", None) is not None:
+                    self._inference_log.record_episode_start(self._robot_tcp0)
                 self._action_cache = None
                 self._cache_step = 0
                 self._inferring = True
@@ -1501,6 +1563,8 @@ class PiperEEFInference:
             self._robot_tcp0 = self._robot.get_eef_pose().astype(np.float64)
             if was_inferring and self._trajectory_recorder is not None:
                 self._trajectory_recorder.begin_episode(self._robot_tcp0)
+            if was_inferring and getattr(self, "_inference_log", None) is not None:
+                self._inference_log.record_episode_start(self._robot_tcp0)
             self._action_cache = None
             self._cache_step = 0
             if self._trajectory_view is not None:
@@ -2074,6 +2138,11 @@ def _parse_args(parser=None, argv=None):
         ),
     )
     p.add_argument(
+        "--inference_log",
+        default=None,
+        help="仅真机推理：保存完整模型动作块、两路模型输入图像和每条 EndPoseCtrl 指令到新目录",
+    )
+    p.add_argument(
         "--visualize_trajectory", action="store_true",
         help="真机 chunk_relative 推理时实时显示即将执行的 Robot Base TCP 轨迹",
     )
@@ -2235,6 +2304,9 @@ def main(args=None):
         if args.trajectory_log is not None:
             print("[ERROR] --trajectory_log 仅用于真机推理，离线模式请使用 --gif")
             return
+        if args.inference_log is not None:
+            print("[ERROR] --inference_log 仅用于真机推理")
+            return
         init_pose = None
         if args.init_pose:
             init_pose = np.asarray(args.init_pose, dtype=np.float64)
@@ -2333,6 +2405,7 @@ def main(args=None):
         model_state_value=args.model_state_value,
         control_gripper=not args.no_gripper_control,
         trajectory_log=args.trajectory_log,
+        inference_log=args.inference_log,
         control_freq=args.control_freq,
         visualize_trajectory=args.visualize_trajectory,
         trajectory_view=args.trajectory_view,

@@ -115,10 +115,12 @@ def test_test_entry_passes_training_metadata_and_disables_gripper(tmp_path, monk
     assert args.interp_freq == 30
     assert args.max_pos_speed == 0.05
     assert args.max_rot_speed == 0.3
+    assert args.inference_log.startswith("local/runs/outputs/test_inference_logs/")
     monkeypatch.setattr(sys, "argv", [
         "infer_test.py", "--dataset", str(dataset), "--base-camera", "serial", "--wrist-camera", "0",
         "--wrist-crop", "0", "0", "640", "480",
         "--wrist-exposure-ms", "25", "--wrist-white-balance-k", "4600",
+        "--inference-log", str(tmp_path / "custom_log"),
     ])
     infer_test.main()
     manual = captured[1]
@@ -126,6 +128,7 @@ def test_test_entry_passes_training_metadata_and_disables_gripper(tmp_path, monk
     assert manual.wrist_cv_white_balance_k == 4600
     assert not manual.wrist_cv_force_auto_exposure
     assert not manual.wrist_cv_force_auto_white_balance
+    assert manual.inference_log == str(tmp_path / "custom_log")
 
 
 def test_wrist_crop_uses_raw_frame_coordinates_and_dataset_size():

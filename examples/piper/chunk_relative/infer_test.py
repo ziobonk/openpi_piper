@@ -2,7 +2,10 @@
 """Live TCP-only inference for the zero-gripper lightUMI chunk-relative dataset."""
 
 import argparse
+from datetime import UTC
+from datetime import datetime
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -177,6 +180,8 @@ def main() -> None:
     parser.add_argument("--max-rot-speed", type=float, default=0.3, help="TCP interpolation limit in rad/s")
     parser.add_argument("--visualize-trajectory", action="store_true")
     parser.add_argument("--trajectory-log", default=None, help="write measured TCP and targets to a new .npz file")
+    parser.add_argument("--inference-log", type=Path, default=None,
+                        help="directory for model outputs, both model-input images and every robot command; defaults to a new timestamped run")
     args = parser.parse_args()
     if not 1 <= args.steps <= 49 or not 1 <= args.port <= 65535:
         parser.error("steps must be 1..49 and port 1..65535")
@@ -243,6 +248,11 @@ def main() -> None:
         runtime_argv.append("--visualize_trajectory")
     if args.trajectory_log is not None:
         runtime_argv.extend(("--trajectory_log", args.trajectory_log))
+    inference_log = args.inference_log or (
+        Path("local/runs/outputs/test_inference_logs")
+        / f"{datetime.now(UTC):%Y%m%d_%H%M%S_%f}_{os.getpid()}"
+    )
+    runtime_argv.extend(("--inference_log", str(inference_log)))
     if args.wrist_exposure_ms is None:
         runtime_argv.append("--wrist_cv_force_auto_exposure")
     else:
@@ -253,6 +263,7 @@ def main() -> None:
         runtime_argv.extend(("--wrist_cv_white_balance_k", str(args.wrist_white_balance_k)))
     print(f"[test] {fps:g} Hz, base {base_size}, wrist raw {capture_size}, crop {crop} -> {wrist_size}")
     print("[test] model state = 0; physical gripper is not enabled or commanded")
+    print(f"[test] inference log: {inference_log}")
     inference_eef.main(inference_eef._parse_args(argv=runtime_argv))  # noqa: SLF001
 
 

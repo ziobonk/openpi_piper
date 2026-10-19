@@ -127,6 +127,8 @@ uv run examples/piper/chunk_relative/infer_test.py \
 
 `X Y Z` 是现场实测的 J6 法兰到工具 TCP 平移，单位米；省略该参数时使用工程默认值 `0 0 0.22`，仅在当前工具确实符合时才省略。启动时程序使能机械臂并连接相机、策略服务，按 Enter 才开始发送运动目标；`s` 暂停，`q` 退出。首次每次查询只执行 1 个未来 TCP 目标，再读取当前 Piper TCP 重新锚定；模型第 0 步是同帧动作，会跳过。默认以 30 Hz 插值，并按 `0.05 m/s`、`0.3 rad/s` 限制插值速度；确认方向与工作空间后再增大 `--steps`，范围为 1..49。
 
+真机推理默认在 `local/runs/outputs/test_inference_logs/` 下创建带时间戳的新日志目录，启动时会打印路径。也可在上面的命令中加 `--inference-log local/runs/outputs/test_inference_logs/my_run` 指定一个尚不存在的目录。`events.jsonl` 的 `query` 行保存每次送入模型的状态、提示词、**完整原始模型动作块**、当前 TCP 锚点及两张图像文件名；对应的 `query_XXXXXX_global.png` 和 `query_XXXXXX_wrist.png` 是模型实际收到的 224×224 RGB 图像。`command` 行按发送顺序保存每一条插值后的 TCP 位姿及实际传给 Piper SDK `EndPoseCtrl` 的六个法兰整数参数，并用 `query_id`、`model_action_index`、`interpolation_index` 对齐原始动作。每行有墙上时钟纳秒和运行时间，`format.json` 给出单位。日志在写入时逐行刷新，暂停或退出后可直接查看；日志只包含推理查询时的相机帧，不是连续视频。需要实测 TCP 回读轨迹时，还可同时加 `--trajectory-log local/runs/outputs/test_infer.npz`。
+
 专用入口向模型发送固定 `state=[0]`，不读取夹爪反馈用于模型状态，也不会使能或下发夹爪命令；实体夹爪保持当前状态。它从训练元数据读取原始任务文本，不使用其他 Piper 入口内置的提示词。相机应对应训练时的 `observation.images.global`（基座）和 `observation.images.camera`（腕部），视角与工具 TCP 定义须一致。无图形桌面时去掉 `--visualize-trajectory`。可加 `--trajectory-log local/runs/outputs/test_infer.npz` 保存目标及实测 TCP，目标文件必须尚不存在。程序退出后机械臂仍保持使能。
 
 ## 在 Piper 上回放数据集 TCP
