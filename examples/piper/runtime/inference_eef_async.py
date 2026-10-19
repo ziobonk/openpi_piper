@@ -469,11 +469,16 @@ class PiperEEFAsyncInference(eef.PiperEEFInference):
 
     def _build_observation(self) -> dict:
         """构建与训练数据同坐标系的当前观测。"""
-        state = self._robot.get_state().copy()
-        if self._model_action_frame == "chunk_relative":
+        fixed_state = getattr(self, "_model_state_value", None)
+        if self._model_action_frame == "chunk_relative" and fixed_state is not None:
+            self._chunk_tcp_base = self._robot.get_eef_pose().astype(np.float64).copy()
+            state = np.array([fixed_state], dtype=np.float32)
+        else:
+            state = self._robot.get_state().copy()
+        if self._model_action_frame == "chunk_relative" and fixed_state is None:
             self._chunk_tcp_base = state[:6].astype(np.float64).copy()
             state = np.array([self._runtime_gripper_to_model(float(state[6]))], dtype=np.float32)
-        elif self._model_action_frame != "robot_absolute":
+        elif self._model_action_frame not in {"robot_absolute", "chunk_relative"}:
             if self._robot_tcp0 is None:
                 raise RuntimeError("episode robot TCP reference is not initialized")
             state[:6] = eef._relative_pose6(self._robot_tcp0, state[:6])
@@ -571,6 +576,8 @@ def main(args=None, *, mode: str = "temporal_smoothing"):
         legacy_pick_cube_tcp=args.legacy_pick_cube_tcp,
         pico_reference_pose=pico_reference_pose,
         model_gripper_range=model_gripper_range,
+        model_state_value=args.model_state_value,
+        control_gripper=not args.no_gripper_control,
         control_freq=args.control_freq,
         inference_rate=args.inference_rate,
         latency_k=args.latency_k,

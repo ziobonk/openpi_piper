@@ -603,6 +603,8 @@ class PiperEEFController:
 
     def send_gripper_command(self, gripper_mm: float, effort: int = GRIPPER_EFFORT):
         """发送二值夹爪指令：0=全闭，最大值=全开。"""
+        if not self._control_gripper:
+            return
         if self._gripper is not None:
             self._gripper.send(gripper_mm)
             return
@@ -879,6 +881,8 @@ class PiperEEFInference:
         legacy_pick_cube_tcp: bool = False,
         pico_reference_pose: Optional[np.ndarray] = None,
         model_gripper_range: Optional[tuple[float, float]] = None,
+        model_state_value: Optional[float] = None,
+        control_gripper: bool = True,
         trajectory_log: Optional[str] = None,
         control_freq: float = CONTROL_FREQ,
         base_rs_size: tuple[int, int] = (1280, 720),
@@ -925,6 +929,12 @@ class PiperEEFInference:
         ):
             raise ValueError("model_gripper_range must be finite CLOSED < OPEN")
         self._model_gripper_range = model_gripper_range
+        if model_state_value is not None and (
+            model_action_frame != "chunk_relative" or not np.isfinite(model_state_value)
+        ):
+            raise ValueError("model_state_value requires chunk_relative and must be finite")
+        self._model_state_value = model_state_value
+        self._control_gripper = bool(control_gripper)
         self._trajectory_recorder = (
             None if trajectory_log is None else _RealRobotTrajectoryRecorder(trajectory_log)
         )
@@ -951,7 +961,10 @@ class PiperEEFInference:
             )
 
         # 连接 (机械臂 + 夹爪)
-        if _HAS_DM_GRIPPER and gripper_port:
+        if not self._control_gripper:
+            print("[Gripper] 控制已禁用")
+            gripper = None
+        elif _HAS_DM_GRIPPER and gripper_port:
             print(f"[Gripper] 使用达妙 DM-J4310-2EC 夹爪 ({gripper_port})")
             gripper = DmGripperController(
                 port=gripper_port,
@@ -970,6 +983,7 @@ class PiperEEFInference:
         self._robot = PiperEEFController(
             can_name,
             gripper=gripper,
+            control_gripper=self._control_gripper,
             gripper_command_max_mm=gripper_open_width_mm,
         )
         self._policy_client: Optional[websocket_client_policy.WebsocketClientPolicy] = None
@@ -1390,11 +1404,16 @@ class PiperEEFInference:
 
     def _build_observation(self) -> dict:
         """构建与训练数据同坐标系的当前观测。"""
-        state = self._robot.get_state().copy()  # Robot Base TCP pose + gripper
-        if self._model_action_frame == "chunk_relative":
+        fixed_state = getattr(self, "_model_state_value", None)
+        if self._model_action_frame == "chunk_relative" and fixed_state is not None:
+            self._chunk_tcp_base = self._robot.get_eef_pose().astype(np.float64).copy()
+            state = np.array([fixed_state], dtype=np.float32)
+        else:
+            state = self._robot.get_state().copy()  # Robot Base TCP pose + gripper
+        if self._model_action_frame == "chunk_relative" and fixed_state is None:
             self._chunk_tcp_base = state[:6].astype(np.float64).copy()
             state = np.array([self._runtime_gripper_to_model(float(state[6]))], dtype=np.float32)
-        elif self._model_action_frame != "robot_absolute":
+        elif self._model_action_frame not in {"robot_absolute", "chunk_relative"}:
             if self._robot_tcp0 is None:
                 raise RuntimeError("episode robot TCP reference is not initialized")
             state[:6] = _relative_pose6(self._robot_tcp0, state[:6])
@@ -1445,6 +1464,9 @@ class PiperEEFInference:
         elif cmd == "quit":
             self._running = False
         elif cmd == "open_gripper":
+            if not self._control_gripper:
+                print("[Control] 该策略未启用夹爪控制")
+                return
             # 手动测试会暂停策略，防止下一控制周期立刻被策略的闭爪命令覆盖。
             self._inferring = False
             self._action_cache = None
@@ -2074,6 +2096,8 @@ def _parse_args(parser=None, argv=None):
         "--model_gripper_range", type=float, nargs=2, default=None, metavar=("CLOSED", "OPEN"),
         help="训练数据夹爪原始值的闭/开端点；推理时双向映射到 Piper 夹爪宽度",
     )
+    p.add_argument("--model_state_value", type=float, default=None, help="chunk_relative 模型的固定 1D 状态值")
+    p.add_argument("--no_gripper_control", action="store_true", help="不使能或下发夹爪命令")
     p.add_argument("--control_freq", type=float, default=CONTROL_FREQ, help="真机动作频率 Hz；应与训练数据 FPS 一致")
     p.add_argument(
         "--tcp_offset_m", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"),
@@ -2270,6 +2294,8 @@ def main(args=None):
         legacy_pick_cube_tcp=args.legacy_pick_cube_tcp,
         pico_reference_pose=pico_reference_pose,
         model_gripper_range=model_gripper_range,
+        model_state_value=args.model_state_value,
+        control_gripper=not args.no_gripper_control,
         trajectory_log=args.trajectory_log,
         control_freq=args.control_freq,
         visualize_trajectory=args.visualize_trajectory,

@@ -68,6 +68,35 @@ WANDB_MODE=offline WANDB_DIR=local/runs/wandb XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 
 训练时第 0 个 TCP 动作是同帧基准，模型采样的其余 49 步才是未来动作。这个数据集没有夹爪信号，推理端必须单独控制或固定夹爪；`infer_pick_place.py` 需要真实夹爪角度元数据，不能直接用于此检查点。
 
+## 训练后推理
+
+先在训练服务器确认实际保存的步数，再从工程根目录启动策略服务：
+
+```bash
+ls checkpoints/pi05_piper_test_chunk_relative/test
+uv run scripts/serve_policy.py --port 6006 policy:checkpoint \
+  --policy.config=pi05_piper_test_chunk_relative \
+  --policy.dir=checkpoints/pi05_piper_test_chunk_relative/test/<step>
+```
+
+`<step>` 改为实际存在的检查点目录名。服务器会读取检查点内的
+`assets/test_chunk_relative/norm_stats.json`；只复制模型参数而不复制统计文件无法正确推理。
+
+在连接 Piper CAN 和两路相机的机器上使用专用入口。该机器只需准备后数据集的
+`meta/info.json` 和 `meta/tasks.jsonl`，用来读取原任务文本、30 Hz 和相机分辨率；不需要 790 MB 视频。若服务器端口不直接可达，可先在机械臂机器建立 SSH 隧道 `ssh -L 6006:localhost:6006 user@server`，再用 `--host localhost`。首次运行例如：
+
+```bash
+uv run examples/piper/chunk_relative/infer_test.py \
+  --dataset local/datasets/test_chunk_relative \
+  --host <服务器地址> --port 6006 --can-name can0 \
+  --base-camera <RealSense序列号> --wrist-camera <OpenCV设备编号> \
+  --steps 1 --tcp-offset-m X Y Z --visualize-trajectory
+```
+
+`X Y Z` 是现场实测的 J6 法兰到工具 TCP 平移，单位米；省略该参数时使用工程默认值 `0 0 0.22`，仅在当前工具确实符合时才省略。启动时程序使能机械臂并连接相机、策略服务，按 Enter 才开始发送运动目标；`s` 暂停，`q` 退出。首次每次查询只执行 1 个未来 TCP 目标，再读取当前 Piper TCP 重新锚定；模型第 0 步是同帧动作，会跳过。默认以 30 Hz 插值，并按 `0.05 m/s`、`0.3 rad/s` 限制插值速度；确认方向与工作空间后再增大 `--steps`，范围为 1..49。
+
+专用入口向模型发送固定 `state=[0]`，不读取夹爪反馈用于模型状态，也不会使能或下发夹爪命令；实体夹爪保持当前状态。它从训练元数据读取原始任务文本，不使用其他 Piper 入口内置的提示词。相机应对应训练时的 `observation.images.global`（基座）和 `observation.images.camera`（腕部），视角与工具 TCP 定义须一致。无图形桌面时去掉 `--visualize-trajectory`。可加 `--trajectory-log local/runs/outputs/test_infer.npz` 保存目标及实测 TCP，目标文件必须尚不存在。程序退出后机械臂仍保持使能。
+
 ## 在 Piper 上回放数据集 TCP
 
 在连接 Piper CAN 的机器上，从工程根目录使用原始 9D 数据集和专用回放入口。它只下发 TCP 位姿，不读取训练检查点，也不控制夹爪；`--exec-horizon 20` 表示每 20 个未来目标用实测 Piper TCP 重新锚定。`--tcp-offset-m` 是实测 J6 法兰到工具 TCP 的平移，单位米；省略时使用工程默认值 `0 0 0.22`，仅当它与当前工具一致时才可省略。
