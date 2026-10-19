@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # ruff: noqa: E402, SLF001
-"""Replay lightUMI 9D/10D absolute TCP actions relative to the current Piper TCP.
+"""Replay raw or prepared lightUMI TCP actions relative to the current Piper TCP.
 
-The dataset action is the *next* aligned absolute tracking-world TCP pose, encoded as xyz
-and the first two rotation-matrix columns (columns grouped). A 10D action also
-contains a source gripper angle, which is deliberately not commanded. There is
-no TCP state. The first action is used as a pose anchor, and the repeated last
-action is dropped. For every remaining action k, command
+The raw dataset action is the *next* aligned absolute tracking-world TCP pose,
+encoded as xyz and the first two rotation-matrix columns (columns grouped).
+The prepared dataset has same-frame 7D actions with a duplicated initial pose.
+The raw terminal duplicate or prepared initial duplicate is excluded; both
+formats then yield the same pose sequence. Any gripper channel is ignored.
+For every remaining action k, command
 T_piper_initial @ inv(T_lightumi_action_0) @ T_lightumi_action_k.
 """
 
@@ -65,6 +66,8 @@ def load_episode(data_dir: Path, episode: int) -> tuple[float, np.ndarray]:
     import pandas as pd
 
     info = json.loads((data_dir / "meta/info.json").read_text())
+    if info.get("robot_type") == "piper_chunk_relative_eef" and info.get("source_kind") == "lightumi":
+        return load_prepared_episode(data_dir, episode, info)
     action_feature = info.get("features", {}).get("action", {})
     action_shape = action_feature.get("shape")
     if info.get("robot_type") != "lightumi" or action_shape not in ([9], [10]):
@@ -112,6 +115,53 @@ def load_episode(data_dir: Path, episode: int) -> tuple[float, np.ndarray]:
     if not np.isfinite(fps) or fps <= 0:
         raise ValueError("dataset FPS must be positive")
     return fps, decode_tcp_actions(actions[:-1, :9])
+
+
+def load_prepared_episode(data_dir: Path, episode: int, info: dict) -> tuple[float, np.ndarray]:
+    """Read the same-frame 7D actions, excluding their duplicated first pose."""
+    import pandas as pd
+
+    if (
+        info.get("features", {}).get("actions", {}).get("shape") != [7]
+        or info.get("features", {}).get("state", {}).get("shape") != [1]
+        or info.get("first_frame_tcp_fill") != "next_frame_pose"
+        or info.get("coordinate_transform_applied") is not False
+        or info.get("gripper_mapping", {}).get("available") is not False
+    ):
+        raise ValueError("expected prepared TCP-only lightUMI same-frame actions")
+    episodes = {
+        int(row["episode_index"]): int(row["length"])
+        for line in (data_dir / "meta/episodes.jsonl").read_text().splitlines()
+        if line
+        for row in [json.loads(line)]
+    }
+    if episode not in episodes:
+        raise ValueError(f"episode {episode} is unavailable; choices: {sorted(episodes)}")
+    parquet = data_dir / info["data_path"].format(
+        episode_chunk=episode // int(info["chunks_size"]), episode_index=episode
+    )
+    frame = pd.read_parquet(parquet, columns=["frame_index", "actions", "state"]).sort_values("frame_index")
+    if len(frame) != episodes[episode] or not np.array_equal(frame["frame_index"], np.arange(len(frame))):
+        raise ValueError("episode frame indices or length do not match metadata")
+    actions = np.asarray(frame["actions"].to_list(), dtype=np.float64)
+    state = np.asarray(frame["state"].to_list(), dtype=np.float64)
+    if (
+        actions.shape != (len(frame), 7)
+        or state.shape != (len(frame), 1)
+        or len(actions) < 3
+        or not np.isfinite(actions).all()
+        or not np.isfinite(state).all()
+        or not np.allclose(actions[:, 6], 0, rtol=0, atol=1e-6)
+        or not np.allclose(state, 0, rtol=0, atol=1e-6)
+        or not np.allclose(actions[0, :6], actions[1, :6], rtol=0, atol=1e-6)
+    ):
+        raise ValueError("expected finite prepared TCP poses, zero gripper, and duplicated first pose")
+    fps = float(info["fps"])
+    if not np.isfinite(fps) or fps <= 0:
+        raise ValueError("dataset FPS must be positive")
+    # Prepared actions are [a0, a0, a1, ..., aN-2]. The raw replay loads
+    # [a0, a1, ..., aN-2] after dropping the source's repeated final action.
+    return fps, actions[1:, :6]
 
 
 def make_targets(poses: np.ndarray, robot_base: np.ndarray) -> np.ndarray:
@@ -254,7 +304,7 @@ def run(args: argparse.Namespace) -> None:
     print(
         f"[lightUMI] episode {args.episode}: {len(poses)} unique action poses, {count} future TCP targets, {fps:g} Hz"
     )
-    print("[lightUMI] action[0] is the data anchor; the repeated final action is dropped; any gripper angle is ignored")
+    print("[lightUMI] first TCP pose is the data anchor; conversion duplicate is excluded; gripper is ignored")
     exec_horizon = getattr(args, "exec_horizon", None)
     if exec_horizon is not None:
         print(f"[ChunkRelative] re-anchor to measured Piper TCP every {exec_horizon} future targets; "
@@ -351,7 +401,7 @@ def run(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Replay lightUMI 9D/10D TCP actions in Piper TCP-relative mode")
+    parser = argparse.ArgumentParser(description="Replay raw or prepared lightUMI TCP actions in Piper TCP-relative mode")
     parser.add_argument("--data-dir", type=Path, default=Path(DEFAULT_DATA_DIR))
     parser.add_argument("--episode", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true", help="validate the episode without connecting to Piper")

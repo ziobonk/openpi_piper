@@ -131,21 +131,21 @@ uv run examples/piper/chunk_relative/infer_test.py \
 
 ## 在 Piper 上回放数据集 TCP
 
-在连接 Piper CAN 的机器上，从工程根目录使用原始 9D 数据集和专用回放入口。它只下发 TCP 位姿，不读取训练检查点，也不控制夹爪；`--exec-horizon 20` 表示每 20 个未来目标用实测 Piper TCP 重新锚定。`--tcp-offset-m` 是实测 J6 法兰到工具 TCP 的平移，单位米；省略时使用工程默认值 `0 0 0.22`，仅当它与当前工具一致时才可省略。
+在连接 Piper CAN 的机器上，从工程根目录使用专用回放入口。它支持原始 `test` 与准备后的 `test_chunk_relative`：准备后数据的第 0、1 行 TCP 相同，入口跳过第 0 行，随后以第 1 行为锚点；两种格式会得到相同的未来 TCP 序列。回放只下发 TCP 位姿，不读取训练检查点，也不控制夹爪；`--exec-horizon 20` 表示每 20 个未来目标用实测 Piper TCP 重新锚定。`--tcp-offset-m` 是实测 J6 法兰到工具 TCP 的平移，单位米；省略时使用工程默认值 `0 0 0.22`，仅当它与当前工具一致时才可省略。
 
 ```bash
-# 离线检查前 20 个目标，不连接机械臂
+# 离线检查准备后数据的前 20 个目标，不连接机械臂
 uv run examples/piper/data_tools/replay_lightumi_tcp_relative.py \
-  --data-dir local/datasets/test --episode 0 \
+  --data-dir local/datasets/test_chunk_relative --episode 0 \
   --exec-horizon 20 --max-frames 20 --dry-run
 
-# 首次真机逐帧试播；把 X Y Z 换成实际工具 TCP 偏移
+# 首次真机逐帧试播；确认 0 0 0.22 与实际工具 TCP 偏移一致
 uv run examples/piper/data_tools/replay_lightumi_tcp_relative.py \
-  --data-dir local/datasets/test --episode 0 \
+  --data-dir local/datasets/test_chunk_relative --episode 0 \
   --exec-horizon 20 --max-frames 20 --step --speed 0.25 \
-  --speed-pct 20 --readback --tcp-offset-m X Y Z
+  --speed-pct 20 --readback --tcp-offset-m 0 0 0.22
 ```
 
 episode 0 的离线检查结果：前 20 个目标相对首目标最大偏移约 3.1 mm，最大单步约 0.5 mm；整集有 440 个未来目标、22 个 20 步块，最大相对偏移约 304 mm。确认 TCP 原点和轴方向、现场工作空间及运动方向后，去掉 `--max-frames 20 --step` 可回放整集；可用 `--workspace XMIN XMAX YMIN YMAX ZMIN ZMAX` 限制 Robot Base 下的目标范围。每次运行在开始前会等待确认；不要传 `--yes`。按 Ctrl+C 可中断，脚本结束后机械臂仍保持使能。完成至少一个目标后会在 `local/runs/outputs/` 保存实测与目标轨迹的 `.npz` 和 `.gif`。
 
-原始数据的最后一个重复动作会丢弃，第一个动作只作基准。若只有准备后的 `test_chunk_relative`，其第 0、1 行 TCP 相同；本节的原始 9D 入口会直接处理时间对齐和末尾重复动作，适合真机回放。
+原始数据的最后一个重复动作会丢弃，第一个动作只作基准。准备后数据则跳过第 0 行填充的重复动作；episode 0 均有 440 个未来 TCP 目标。将 `--data-dir` 改成 `local/datasets/test` 就可回放原始数据。

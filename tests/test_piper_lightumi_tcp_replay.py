@@ -105,6 +105,41 @@ def test_loader_drops_repeated_last_next_action(tmp_path, world, has_gripper):
         load_episode(root, 1)
 
 
+def test_loader_prepared_same_frame_actions_match_raw_replay(tmp_path):
+    root = tmp_path / "test_chunk_relative"
+    (root / "meta").mkdir(parents=True)
+    (root / "data/chunk-000").mkdir(parents=True)
+    info = {
+        "robot_type": "piper_chunk_relative_eef",
+        "source_kind": "lightumi",
+        "fps": 30,
+        "chunks_size": 1000,
+        "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
+        "features": {"actions": {"shape": [7]}, "state": {"shape": [1]}},
+        "first_frame_tcp_fill": "next_frame_pose",
+        "coordinate_transform_applied": False,
+        "gripper_mapping": {"available": False},
+    }
+    (root / "meta/info.json").write_text(json.dumps(info))
+    (root / "meta/episodes.jsonl").write_text(json.dumps({"episode_index": 0, "length": 4}) + "\n")
+    first = _action([1, 2, 3], Rotation.identity())
+    second = _action([1.01, 2, 3], Rotation.from_euler("z", 0.1))
+    third = _action([1.02, 2, 3], Rotation.from_euler("z", 0.2))
+    decoded = decode_tcp_actions(np.stack([first, second, third]))
+    prepared = np.column_stack((decoded[[0, 0, 1, 2]], np.zeros(4)))
+    pd.DataFrame({
+        "frame_index": [0, 1, 2, 3],
+        "actions": list(prepared),
+        "state": [np.zeros(1) for _ in range(4)],
+    }).to_parquet(root / "data/chunk-000/episode_000000.parquet")
+    fps, poses = load_episode(root, 0)
+    assert fps == 30
+    np.testing.assert_allclose(poses, decoded, atol=1e-8)
+    assert make_targets(poses, np.zeros(6)).shape == (2, 7)
+    with pytest.raises(ValueError, match="unavailable"):
+        load_episode(root, 1)
+
+
 def test_rotation_6d_rejects_bad_columns():
     with pytest.raises(ValueError, match="orthonormal"):
         decode_tcp_actions(np.array([[0, 0, 0, 1, 0, 0, 1, 0, 0]]))
