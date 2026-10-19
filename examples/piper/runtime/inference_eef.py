@@ -888,6 +888,9 @@ class PiperEEFInference:
         base_rs_size: tuple[int, int] = (1280, 720),
         visualize_trajectory: bool = False,
         trajectory_view: str = "3d",
+        wrist_cv_size: Optional[tuple[int, int]] = None,
+        wrist_cv_crop: Optional[tuple[int, int, int, int]] = None,
+        wrist_cv_output_size: Optional[tuple[int, int]] = None,
     ):
         self._action_horizon = action_horizon
         self._exec_horizon = exec_horizon
@@ -999,6 +1002,9 @@ class PiperEEFInference:
             base_cv_id=cv_base_id,
             wrist_cv_id=cv_wrist_id,
             wrist_cv_exposure=wrist_exposure,
+            wrist_cv_size=wrist_cv_size,
+            wrist_cv_crop=wrist_cv_crop,
+            wrist_cv_output_size=wrist_cv_output_size,
         )
         self._has_base_cam = bool(rs2_base_serial or cv_base_id is not None)
         self._has_wrist_cam = bool(rs2_wrist_serial or cv_wrist_id is not None)
@@ -1975,6 +1981,12 @@ def _parse_args(parser=None, argv=None):
     p.add_argument("--rs2_wrist", default=None, help="D435i 腕部相机序列号（与 --usb_wrist 二选一）")
     p.add_argument("--wrist_rs_size", type=int, nargs=2, default=None, metavar=("WIDTH", "HEIGHT"))
     p.add_argument("--usb_wrist", type=int, default=None, help="USB 腕部相机 OpenCV 设备 ID (默认: None)")
+    p.add_argument("--wrist_cv_size", type=int, nargs=2, default=None, metavar=("WIDTH", "HEIGHT"),
+                   help="USB 腕部相机原始采集分辨率")
+    p.add_argument("--wrist_cv_crop", type=int, nargs=4, default=None, metavar=("X", "Y", "WIDTH", "HEIGHT"),
+                   help="USB 腕部相机原始帧中的裁剪框")
+    p.add_argument("--wrist_cv_output_size", type=int, nargs=2, default=None, metavar=("WIDTH", "HEIGHT"),
+                   help="腕部裁剪后缩放到训练视频分辨率")
     p.add_argument(
         "--wrist_exposure",
         type=float,
@@ -2257,6 +2269,9 @@ def main(args=None):
         rs2_base_serial=args.rs2_base,
         rs2_wrist_serial=args.rs2_wrist,
         wrist_rs_size=tuple(args.wrist_rs_size) if args.wrist_rs_size is not None else None,
+        wrist_cv_size=tuple(args.wrist_cv_size) if args.wrist_cv_size is not None else None,
+        wrist_cv_crop=tuple(args.wrist_cv_crop) if args.wrist_cv_crop is not None else None,
+        wrist_cv_output_size=tuple(args.wrist_cv_output_size) if args.wrist_cv_output_size is not None else None,
         base_rs_size=tuple(args.base_rs_size),
         cv_base_id=args.cam_ids[0] if len(args.cam_ids) > 0 else None,
         cv_wrist_id=args.usb_wrist

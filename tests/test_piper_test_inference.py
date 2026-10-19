@@ -4,6 +4,7 @@
 import json
 from pathlib import Path
 import sys
+import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -13,6 +14,8 @@ sys.path.insert(0, str(ROOT))
 
 from examples.piper.chunk_relative import infer_test
 from examples.piper.runtime import inference_eef as eef
+from examples.piper.runtime.camera_utils import OpenCVCameras
+from examples.piper.runtime.camera_utils import crop_resize_bgr
 from examples.piper.runtime.inference_eef_async import PiperEEFAsyncInference
 
 
@@ -76,6 +79,7 @@ def test_test_entry_passes_training_metadata_and_disables_gripper(tmp_path, monk
             "state": {"shape": [1]},
             "actions": {"shape": [7]},
             "observation.images.global": {"shape": [480, 640, 3]},
+            "observation.images.camera": {"shape": [480, 640, 3]},
         },
     }
     (dataset / "meta/info.json").write_text(json.dumps(info))
@@ -85,6 +89,7 @@ def test_test_entry_passes_training_metadata_and_disables_gripper(tmp_path, monk
     monkeypatch.setattr(infer_test.inference_eef, "main", captured.append)
     monkeypatch.setattr(sys, "argv", [
         "infer_test.py", "--dataset", str(dataset), "--base-camera", "serial", "--wrist-camera", "0",
+        "--wrist-capture-size", "1280", "720", "--wrist-crop", "100", "50", "960", "640",
         "--steps", "3", "--tcp-offset-m", "0", "0", "0.22",
     ])
     infer_test.main()
@@ -96,7 +101,54 @@ def test_test_entry_passes_training_metadata_and_disables_gripper(tmp_path, monk
     assert args.no_gripper_control
     assert args.control_freq == 30
     assert args.base_rs_size == [640, 480]
+    assert args.wrist_cv_size == [1280, 720]
+    assert args.wrist_cv_crop == [100, 50, 960, 640]
+    assert args.wrist_cv_output_size == [640, 480]
     assert args.tcp_offset_m == [0.0, 0.0, 0.22]
     assert args.interp_freq == 30
     assert args.max_pos_speed == 0.05
     assert args.max_rot_speed == 0.3
+
+
+def test_wrist_crop_uses_raw_frame_coordinates_and_dataset_size():
+    frame = np.zeros((6, 8, 3), dtype=np.uint8)
+    frame[1:5, 2:6] = (10, 20, 30)
+    prepared = crop_resize_bgr(frame, (2, 1, 4, 4), (4, 4))
+    assert prepared.shape == (4, 4, 3)
+    np.testing.assert_array_equal(prepared, np.full((4, 4, 3), (10, 20, 30), dtype=np.uint8))
+    assert crop_resize_bgr(frame, (2, 1, 4, 4), (2, 2)).shape == (2, 2, 3)
+    with np.testing.assert_raises_regex(ValueError, "exceeds captured frame"):
+        crop_resize_bgr(frame, (5, 1, 4, 4), (4, 4))
+
+
+def test_runtime_wrist_image_crops_before_model_resize():
+    camera = OpenCVCameras.__new__(OpenCVCameras)
+    camera._lock = threading.Lock()
+    frame = np.full((6, 8, 3), (255, 0, 0), dtype=np.uint8)
+    frame[1:5, 2:6] = (0, 0, 255)
+    camera._latest = {"wrist": frame}
+    camera._wrist_crop = (2, 1, 4, 4)
+    camera._wrist_output_size = (4, 4)
+    image = camera.get_wrist()
+    np.testing.assert_array_equal(image[112, 112], (255, 0, 0))
+
+
+def test_preview_only_reads_wrist_camera_and_writes_comparison_images(tmp_path, monkeypatch):
+    class FakeCapture:
+        def isOpened(self):  # noqa: N802 - OpenCV method name
+            return True
+
+        def set(self, *_):
+            return True
+
+        def read(self):
+            return True, np.full((6, 8, 3), (10, 20, 30), dtype=np.uint8)
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(infer_test.cv2, "VideoCapture", lambda *_: FakeCapture())
+    infer_test.preview_wrist(tmp_path, 0, (8, 6), (2, 1, 4, 4), (4, 4), tmp_path / "preview")
+    assert (tmp_path / "preview/raw.png").exists()
+    assert (tmp_path / "preview/prepared.png").exists()
+    assert (tmp_path / "preview/model_input.png").exists()

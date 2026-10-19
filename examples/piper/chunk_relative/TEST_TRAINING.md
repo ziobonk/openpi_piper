@@ -85,11 +85,25 @@ uv run scripts/serve_policy.py --port 6006 policy:checkpoint \
 在连接 Piper CAN 和两路相机的机器上使用专用入口。该机器只需准备后数据集的
 `meta/info.json` 和 `meta/tasks.jsonl`，用来读取原任务文本、30 Hz 和相机分辨率；不需要 790 MB 视频。若服务器端口不直接可达，可先在机械臂机器建立 SSH 隧道 `ssh -L 6006:localhost:6006 user@server`，再用 `--host localhost`。首次运行例如：
 
+**先核对腕部相机画面。** 训练视频 `observation.images.camera` 是经过裁剪的 640×480 画面；原始采集分辨率和裁剪框没有记录在数据集元信息里。旧推理路径直接将 USB 相机整帧缩放到 224×224，只有 USB 输出本身已是同一裁剪画面时才可能一致。先把训练视频也放在机械臂机器上，运行只读预览（不连接 CAN 或策略服务）：
+
+```bash
+uv run examples/piper/chunk_relative/infer_test.py \
+  --dataset local/datasets/test_chunk_relative \
+  --wrist-camera <OpenCV设备编号> --wrist-capture-size <原图宽> <原图高> \
+  --preview-wrist local/runs/outputs/wrist_preview
+```
+
+预览目录中 `raw.png` 是相机实际输出，`prepared.png` 是待送入模型前的 640×480 画面，`model_input.png` 是模型看到的 224×224 画面；若数据集视频存在，还会保存 `reference_dataset.png` 和 `reference_model_input.png`（第 0 集第 30 帧）。比较取景范围、视角和物体比例，确定裁剪框后加 `--wrist-crop X Y W H` 再预览。`X Y W H` 是**原始相机帧**中的像素坐标，程序会将此区域缩放到训练视频的 640×480。若相机驱动已经输出训练时裁好的 640×480，则明确使用 `--wrist-capture-size 640 480 --wrist-crop 0 0 640 480`。预览会打印实际帧尺寸；设备若未按请求输出指定分辨率，应按实际尺寸重新确定裁剪框。没有原始裁剪参数和现场图像，无法仅凭训练视频证明画面完全一致。
+
+确认裁剪框后再运行真机推理：
+
 ```bash
 uv run examples/piper/chunk_relative/infer_test.py \
   --dataset local/datasets/test_chunk_relative \
   --host <服务器地址> --port 6006 --can-name can0 \
   --base-camera <RealSense序列号> --wrist-camera <OpenCV设备编号> \
+  --wrist-capture-size <原图宽> <原图高> --wrist-crop X Y W H \
   --steps 1 --tcp-offset-m X Y Z --visualize-trajectory
 ```
 

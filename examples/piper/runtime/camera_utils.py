@@ -64,6 +64,22 @@ def _resize_pad_bgr(bgr: np.ndarray, target_w: int, target_h: int) -> np.ndarray
     return padded
 
 
+def crop_resize_bgr(frame: np.ndarray, crop: tuple[int, int, int, int], output_size: tuple[int, int]) -> np.ndarray:
+    """Crop a captured BGR frame, then resize it to the dataset video size."""
+    if frame.ndim != 3 or frame.shape[2] != 3:
+        raise ValueError(f"expected HWC BGR frame, got {frame.shape}")
+    x, y, width, height = crop
+    output_width, output_height = output_size
+    if min(x, y) < 0 or min(width, height, output_width, output_height) <= 0:
+        raise ValueError("crop origin must be nonnegative and dimensions must be positive")
+    if x + width > frame.shape[1] or y + height > frame.shape[0]:
+        raise ValueError(f"wrist crop {crop} exceeds captured frame {frame.shape[1]}x{frame.shape[0]}")
+    cropped = frame[y : y + height, x : x + width]
+    if (width, height) == output_size:
+        return cropped.copy()
+    return cv2.resize(cropped, output_size, interpolation=cv2.INTER_AREA)
+
+
 # ============================================================================
 # RealSense 后端
 # ============================================================================
@@ -265,7 +281,10 @@ class OpenCVCameras:
     """
 
     def __init__(self, base_id: Optional[int] = None, wrist_id: Optional[int] = None,
-                 third_id: Optional[int] = None, exposure: Optional[float] = None):
+                 third_id: Optional[int] = None, exposure: Optional[float] = None,
+                 wrist_size: Optional[tuple[int, int]] = None,
+                 wrist_crop: Optional[tuple[int, int, int, int]] = None,
+                 wrist_output_size: Optional[tuple[int, int]] = None):
         if not HAS_CV2:
             raise ImportError("需要 opencv-python: pip install opencv-python")
 
@@ -274,6 +293,8 @@ class OpenCVCameras:
         self._lock = threading.Lock()
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._wrist_crop = wrist_crop
+        self._wrist_output_size = wrist_output_size
 
         for name, dev_id in [("base", base_id), ("wrist", wrist_id), ("third", third_id)]:
             if dev_id is None:
@@ -281,13 +302,14 @@ class OpenCVCameras:
             cap = cv2.VideoCapture(dev_id)
             if not cap.isOpened():
                 print(f"[Camera] ⚠ OpenCV 设备 ID {dev_id} ({name}) 打开失败，画面将为黑帧")
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
+            width, height = wrist_size if name == "wrist" and wrist_size is not None else (CAPTURE_WIDTH, CAPTURE_HEIGHT)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             cap.set(cv2.CAP_PROP_FPS, CAPTURE_FPS)
             if exposure is not None:
                 self._set_exposure(cap, name, exposure)
             self._caps[name] = cap
-            self._latest[name] = np.zeros((CAPTURE_HEIGHT, CAPTURE_WIDTH, 3), dtype=np.uint8)
+            self._latest[name] = np.zeros((height, width, 3), dtype=np.uint8)
 
         # 如果只有一个相机，复制为 wrist 也指向同一个设备
         if "base" in self._caps and "wrist" not in self._caps:
@@ -336,6 +358,8 @@ class OpenCVCameras:
     def _get(self, name: str) -> np.ndarray:
         with self._lock:
             bgr = self._latest.get(name, np.zeros((CAPTURE_HEIGHT, CAPTURE_WIDTH, 3), dtype=np.uint8))
+        if name == "wrist" and self._wrist_crop is not None:
+            bgr = crop_resize_bgr(bgr, self._wrist_crop, self._wrist_output_size or (CAPTURE_WIDTH, CAPTURE_HEIGHT))
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         return _resize_pad_bgr(rgb, *TARGET_SIZE)
 
@@ -418,6 +442,9 @@ def create_cameras(
     wrist_cv_exposure: Optional[float] = None,
     base_rs_size: Optional[tuple[int, int]] = None,
     wrist_rs_size: Optional[tuple[int, int]] = None,
+    wrist_cv_size: Optional[tuple[int, int]] = None,
+    wrist_cv_crop: Optional[tuple[int, int, int, int]] = None,
+    wrist_cv_output_size: Optional[tuple[int, int]] = None,
 ):
     """创建一个统一接口的相机对象。
 
@@ -457,7 +484,8 @@ def create_cameras(
     cv_cam = None
     if cv_requested:
         cv_cam = OpenCVCameras(base_id=base_cv_id, wrist_id=wrist_cv_id, third_id=third_cv_id,
-                               exposure=wrist_cv_exposure)
+                               exposure=wrist_cv_exposure, wrist_size=wrist_cv_size,
+                               wrist_crop=wrist_cv_crop, wrist_output_size=wrist_cv_output_size)
 
     if rs_cam is not None and cv_cam is not None:
         return CompositeCameras(

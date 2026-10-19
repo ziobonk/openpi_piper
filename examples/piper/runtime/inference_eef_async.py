@@ -545,6 +545,9 @@ def main(args=None, *, mode: str = "temporal_smoothing"):
         if args.usb_wrist is not None
         else (args.cam_ids[1] if len(args.cam_ids) > 1 else None),
         wrist_exposure=args.wrist_exposure,
+        wrist_cv_size=tuple(args.wrist_cv_size) if args.wrist_cv_size is not None else None,
+        wrist_cv_crop=tuple(args.wrist_cv_crop) if args.wrist_cv_crop is not None else None,
+        wrist_cv_output_size=tuple(args.wrist_cv_output_size) if args.wrist_cv_output_size is not None else None,
         action_horizon=args.action_horizon,
         exec_horizon=args.exec_horizon,
         max_pos_speed=args.max_pos_speed,
