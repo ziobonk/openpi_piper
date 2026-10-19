@@ -309,6 +309,8 @@ def run(args: argparse.Namespace) -> None:
     if exec_horizon is not None:
         print(f"[ChunkRelative] re-anchor to measured Piper TCP every {exec_horizon} future targets; "
               f"{len(range(0, count, exec_horizon))} chunks")
+    else:
+        print(f"[SingleAnchor] use the initial Piper TCP for all {count} future targets")
     print(
         f"[lightUMI] max relative displacement {np.max(np.linalg.norm(relative[:, :3], axis=1)) * 1000:.1f} mm; "
         f"max step {pos_steps.max() * 1000:.1f} mm, {np.rad2deg(rot_steps.max()):.2f} deg"
@@ -325,9 +327,16 @@ def run(args: argparse.Namespace) -> None:
     robot = eef.PiperEEFController(args.can_name, control_gripper=False)
     if not robot.enable(speed_pct=args.speed_pct):
         raise RuntimeError("Piper enable failed")
+    try:
+        if not args.yes:
+            input("Check TCP axes, workspace, and clear path; press Enter to replay or Ctrl+C to cancel...")
+    except KeyboardInterrupt:
+        print("[Replay] Interrupted before motion; robot remains enabled")
+        return
     base = robot.get_eef_pose().astype(np.float64)
-    if exec_horizon is None:
-        replay._check_workspace(make_targets(poses, base), args.workspace)
+    full_targets = make_targets(poses, base) if exec_horizon is None else None
+    if full_targets is not None:
+        replay._check_workspace(full_targets, args.workspace)
     subdivisions = max(1, round(1 / args.speed))
     period = 1 / fps / args.speed / subdivisions
     print(
@@ -338,13 +347,14 @@ def run(args: argparse.Namespace) -> None:
     commanded = [base.copy()]
     elapsed = [0.0]
     try:
-        if not args.yes:
-            input("Check TCP axes, workspace, and clear path; press Enter to replay or Ctrl+C to cancel...")
         started_at = time.monotonic()
         chunk_size = exec_horizon or count
         for start in range(0, count, chunk_size):
             chunk_base = base if start == 0 else robot.get_eef_pose().astype(np.float64)
-            targets = make_chunk_targets(poses, start, min(chunk_size, count - start), chunk_base)
+            targets = (
+                full_targets if full_targets is not None
+                else make_chunk_targets(poses, start, min(chunk_size, count - start), chunk_base)
+            )
             replay._check_workspace(targets, args.workspace)
             if exec_horizon is not None:
                 print(f"[Chunk {start}] Piper TCP anchor {chunk_base.round(4)}; {len(targets)} targets")

@@ -251,6 +251,46 @@ def test_chunk_replay_uses_new_feedback_anchor(monkeypatch, tmp_path):
     np.testing.assert_allclose([pose[0] for pose in sent], [0.41, 0.42, 0.425])
 
 
+def test_full_replay_keeps_initial_tcp_anchor_despite_readback_drift(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from examples.piper.data_tools import replay_lightumi_tcp_relative as lightumi
+    from examples.piper.runtime import inference_eef as eef
+
+    poses = np.array([[1.0 + i * 0.01, 0, 0, 0, 0, 0] for i in range(4)])
+    sent = []
+    events = []
+
+    class Robot:
+        def enable(self, *, speed_pct):
+            return True
+
+        def get_eef_pose(self):
+            events.append("read")
+            x = sent[-1][0] - 0.005 if sent else 0.4
+            return np.array([x, 0, 0.3, 0, 0, 0])
+
+        def send_eef_command(self, pose):
+            sent.append(pose.copy())
+
+    monkeypatch.setattr(lightumi, "load_episode", lambda *_: (30.0, poses))
+    monkeypatch.setattr(eef, "PiperEEFController", lambda *_, **__: Robot())
+    monkeypatch.setattr(lightumi.time, "sleep", lambda _: None)
+    monkeypatch.setattr(lightumi, "save_comparison", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("builtins.input", lambda *_: events.append("confirm"))
+    args = SimpleNamespace(
+        data_dir=tmp_path, episode=0, dry_run=False, max_frames=None, exec_horizon=None,
+        speed=1.0, speed_pct=30, can_name="can0", tcp_offset_m=None,
+        step=False, readback=True, yes=False,
+        max_total_translation_m=0.5, max_step_translation_m=0.05,
+        max_total_rotation_deg=120, max_step_rotation_deg=20,
+        workspace=None, comparison_gif=tmp_path / "comparison.gif", gif_fps=3,
+    )
+    lightumi.run(args)
+    assert events[:2] == ["confirm", "read"]
+    np.testing.assert_allclose([pose[0] for pose in sent], [0.41, 0.42, 0.43])
+
+
 def test_relative_pose_uses_initial_tcp_axes():
     anchor = np.array([0.4, 0, 0.3, 0, 0, np.pi / 2])
     second = np.array([0.4, 0.01, 0.3, 0, 0, np.pi / 2])
