@@ -174,11 +174,15 @@ def test_preview_only_reads_wrist_camera_and_writes_comparison_images(tmp_path, 
 
     cap = FakeCapture()
     monkeypatch.setattr(infer_test.cv2, "VideoCapture", lambda *_: cap)
+    monkeypatch.setattr(infer_test.shutil, "which", lambda *_: None)
     infer_test.preview_wrist(tmp_path, 0, (8, 6), (2, 1, 4, 4), (4, 4), tmp_path / "preview")
     assert cap.reads == 60
     assert (tmp_path / "preview/raw.png").exists()
     assert (tmp_path / "preview/prepared.png").exists()
     assert (tmp_path / "preview/model_input.png").exists()
+    report = json.loads((tmp_path / "preview/preview_report.json").read_text())
+    assert report["actual_capture_size"] == [8, 6]
+    assert report["v4l2_controls"] is None
 
 
 def test_manual_camera_controls_apply_requested_values():

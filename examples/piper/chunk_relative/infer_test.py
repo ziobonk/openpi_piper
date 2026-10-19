@@ -4,6 +4,8 @@
 import argparse
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 
 import cv2
@@ -55,6 +57,8 @@ def preview_wrist(
     exposure_ms: float | None = None,
     white_balance_k: int | None = None,
     fourcc: str | None = None,
+    reference_episode: int = 0,
+    reference_frame: int = 30,
 ) -> None:
     """Save the raw and prepared USB frames without opening CAN or a policy client."""
     cap = cv2.VideoCapture(camera_id)
@@ -86,6 +90,31 @@ def preview_wrist(
                 frame = candidate
         if frame is None:
             raise RuntimeError(f"wrist camera {camera_id} returned no frame")
+        properties = {
+            name: cap.get(prop) for name, prop in {
+                "width": cv2.CAP_PROP_FRAME_WIDTH,
+                "height": cv2.CAP_PROP_FRAME_HEIGHT,
+                "fps": cv2.CAP_PROP_FPS,
+                "fourcc_code": cv2.CAP_PROP_FOURCC,
+                "auto_exposure": cv2.CAP_PROP_AUTO_EXPOSURE,
+                "exposure": cv2.CAP_PROP_EXPOSURE,
+                "auto_white_balance": cv2.CAP_PROP_AUTO_WB,
+                "white_balance_temperature": cv2.CAP_PROP_WB_TEMPERATURE,
+                "gain": cv2.CAP_PROP_GAIN,
+                "brightness": cv2.CAP_PROP_BRIGHTNESS,
+                "gamma": cv2.CAP_PROP_GAMMA,
+            }.items()
+        }
+        controls = None
+        if shutil.which("v4l2-ctl"):
+            try:
+                result = subprocess.run(
+                    ["v4l2-ctl", "--device", f"/dev/video{camera_id}", "--list-ctrls"],
+                    capture_output=True, text=True, check=False, timeout=5,
+                )
+                controls = {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                controls = {"error": str(exc)}
     finally:
         cap.release()
 
@@ -96,20 +125,30 @@ def preview_wrist(
     cv2.imwrite(str(output_dir / "raw.png"), frame)
     cv2.imwrite(str(output_dir / "prepared.png"), prepared)
     cv2.imwrite(str(output_dir / "model_input.png"), _resize_pad_bgr(prepared, 224, 224))
+    (output_dir / "preview_report.json").write_text(json.dumps({
+        "requested_capture_size": capture_size,
+        "actual_capture_size": actual_size,
+        "crop": effective_crop,
+        "opencv": properties,
+        "v4l2_controls": controls,
+    }, ensure_ascii=False, indent=2) + "\n")
     print(f"[wrist preview] requested {capture_size}, actual {actual_size}; crop {effective_crop} -> {wrist_size}")
 
-    video = dataset / "videos/chunk-000/observation.images.camera/episode_000000.mp4"
+    video = dataset / (
+        f"videos/chunk-{reference_episode // 1000:03d}/observation.images.camera/"
+        f"episode_{reference_episode:06d}.mp4"
+    )
     if video.exists():
         reference = cv2.VideoCapture(str(video))
         try:
-            reference.set(cv2.CAP_PROP_POS_FRAMES, 30)
+            reference.set(cv2.CAP_PROP_POS_FRAMES, reference_frame)
             ok, dataset_frame = reference.read()
         finally:
             reference.release()
         if ok:
             cv2.imwrite(str(output_dir / "reference_dataset.png"), dataset_frame)
             cv2.imwrite(str(output_dir / "reference_model_input.png"), _resize_pad_bgr(dataset_frame, 224, 224))
-            print("[wrist preview] saved training video frame 30 for field-of-view comparison")
+            print(f"[wrist preview] saved training episode {reference_episode} frame {reference_frame}")
     print(f"[wrist preview] images saved to {output_dir}")
 
 
@@ -127,6 +166,8 @@ def main() -> None:
                         help="crop rectangle in raw USB pixels; use 0 0 W H if USB output is already cropped")
     parser.add_argument("--preview-wrist", type=Path, metavar="OUTPUT_DIR",
                         help="save raw, cropped and model images without connecting the robot")
+    parser.add_argument("--reference-episode", type=int, default=0, help="training video episode for preview")
+    parser.add_argument("--reference-frame", type=int, default=30, help="training video frame for preview")
     parser.add_argument("--wrist-exposure-ms", type=float, help="manual USB exposure in milliseconds; default auto")
     parser.add_argument("--wrist-white-balance-k", type=int, help="manual USB white balance temperature; default auto")
     parser.add_argument("--wrist-fourcc", default="YUYV", help="raw USB pixel format; camera 0 uses YUYV")
@@ -155,6 +196,8 @@ def main() -> None:
         parser.error("--wrist-white-balance-k must be positive")
     if len(args.wrist_fourcc) != 4 or not args.wrist_fourcc.isascii():
         parser.error("--wrist-fourcc must be four ASCII characters")
+    if args.reference_episode < 0 or args.reference_frame < 0:
+        parser.error("reference episode and frame must be nonnegative")
 
     fps, base_size, wrist_size, prompt = training_metadata(args.dataset)
     if args.preview_wrist is not None:
@@ -162,6 +205,7 @@ def main() -> None:
             args.dataset, args.wrist_camera, capture_size, crop, wrist_size, args.preview_wrist,
             args.wrist_exposure_ms, args.wrist_white_balance_k,
             args.wrist_fourcc,
+            args.reference_episode, args.reference_frame,
         )
         return
     if args.base_camera is None:
