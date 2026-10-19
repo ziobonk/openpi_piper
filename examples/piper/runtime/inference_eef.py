@@ -891,6 +891,9 @@ class PiperEEFInference:
         wrist_cv_size: Optional[tuple[int, int]] = None,
         wrist_cv_crop: Optional[tuple[int, int, int, int]] = None,
         wrist_cv_output_size: Optional[tuple[int, int]] = None,
+        wrist_cv_white_balance_k: Optional[int] = None,
+        wrist_cv_force_auto_exposure: bool = False,
+        wrist_cv_force_auto_white_balance: bool = False,
     ):
         self._action_horizon = action_horizon
         self._exec_horizon = exec_horizon
@@ -1005,6 +1008,9 @@ class PiperEEFInference:
             wrist_cv_size=wrist_cv_size,
             wrist_cv_crop=wrist_cv_crop,
             wrist_cv_output_size=wrist_cv_output_size,
+            wrist_cv_white_balance_k=wrist_cv_white_balance_k,
+            wrist_cv_force_auto_exposure=wrist_cv_force_auto_exposure,
+            wrist_cv_force_auto_white_balance=wrist_cv_force_auto_white_balance,
         )
         self._has_base_cam = bool(rs2_base_serial or cv_base_id is not None)
         self._has_wrist_cam = bool(rs2_wrist_serial or cv_wrist_id is not None)
@@ -1987,6 +1993,10 @@ def _parse_args(parser=None, argv=None):
                    help="USB 腕部相机原始帧中的裁剪框")
     p.add_argument("--wrist_cv_output_size", type=int, nargs=2, default=None, metavar=("WIDTH", "HEIGHT"),
                    help="腕部裁剪后缩放到训练视频分辨率")
+    p.add_argument("--wrist_cv_white_balance_k", type=int, default=None,
+                   help="USB 腕部相机固定白平衡色温 K；默认由相机自动控制")
+    p.add_argument("--wrist_cv_force_auto_exposure", action="store_true", help="显式启用 USB 腕部相机自动曝光")
+    p.add_argument("--wrist_cv_force_auto_white_balance", action="store_true", help="显式启用 USB 腕部相机自动白平衡")
     p.add_argument(
         "--wrist_exposure",
         type=float,
@@ -2272,6 +2282,9 @@ def main(args=None):
         wrist_cv_size=tuple(args.wrist_cv_size) if args.wrist_cv_size is not None else None,
         wrist_cv_crop=tuple(args.wrist_cv_crop) if args.wrist_cv_crop is not None else None,
         wrist_cv_output_size=tuple(args.wrist_cv_output_size) if args.wrist_cv_output_size is not None else None,
+        wrist_cv_white_balance_k=args.wrist_cv_white_balance_k,
+        wrist_cv_force_auto_exposure=args.wrist_cv_force_auto_exposure,
+        wrist_cv_force_auto_white_balance=args.wrist_cv_force_auto_white_balance,
         base_rs_size=tuple(args.base_rs_size),
         cv_base_id=args.cam_ids[0] if len(args.cam_ids) > 0 else None,
         cv_wrist_id=args.usb_wrist

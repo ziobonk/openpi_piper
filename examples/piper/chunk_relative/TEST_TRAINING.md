@@ -85,16 +85,30 @@ uv run scripts/serve_policy.py --port 6006 policy:checkpoint \
 在连接 Piper CAN 和两路相机的机器上使用专用入口。该机器只需准备后数据集的
 `meta/info.json` 和 `meta/tasks.jsonl`，用来读取原任务文本、30 Hz 和相机分辨率；不需要 790 MB 视频。若服务器端口不直接可达，可先在机械臂机器建立 SSH 隧道 `ssh -L 6006:localhost:6006 user@server`，再用 `--host localhost`。首次运行例如：
 
-**先核对腕部相机画面。** 训练视频 `observation.images.camera` 是经过裁剪的 640×480 画面；原始采集分辨率和裁剪框没有记录在数据集元信息里。旧推理路径直接将 USB 相机整帧缩放到 224×224，只有 USB 输出本身已是同一裁剪画面时才可能一致。先把训练视频也放在机械臂机器上，运行只读预览（不连接 CAN 或策略服务）：
+**先核对腕部相机画面。** 训练视频 `observation.images.camera` 是经过裁剪的 640×480 画面；原始采集分辨率和裁剪框没有记录在数据集元信息里。旧推理路径直接将 USB 相机整帧缩放到 224×224，只有 USB 输出本身已是同一裁剪画面时才可能一致。先把训练视频也放在机械臂机器上，运行相机预览（不连接 CAN 或策略服务）：
+
+相机 0 的现场 `v4l2-ctl` 信息显示当前为 640×480、YUYV、30 FPS，自动曝光和自动白平衡均开启；`exposure_time_absolute=166` 和 `white_balance_temperature=4600` 标记为 `inactive`，是自动模式下的默认控制值，**不能当成训练时的实测曝光/色温**。`zoom_absolute=0`，V4L2 裁剪范围是整张 640×480；这也不能排除录制软件做了后处理裁剪。训练视频未保存曝光、增益、白平衡、gamma、锐度或原相机的控制值。
+
+在连接相机 0 的机器上先采集原图和相机控制快照，不连接机械臂：
+
+```bash
+uv run examples/piper/chunk_relative/capture_wrist_diagnostics.py \
+  --camera 0 --device /dev/video0 --width 640 --height 480 --fps 30 \
+  --output-dir local/runs/outputs/wrist_capture
+```
+
+输出 `raw_00.png` 至 `raw_04.png` 和 `capture_report.json`（内含打开相机前、采集中 `v4l2-ctl --all`、`--list-ctrls`、`--list-formats-ext` 结果、实际 OpenCV 格式及像素统计）。数据集视频存在时还会写出 `dataset_reference.png`；若只复制了 `meta`，仍会保存原图和设备信息。将 `raw_00.png` 和 `capture_report.json` 与训练视频帧一起对比，才能确定现场裁剪框和色彩差异。曝光/白平衡的像素均值只有在场景与照明一致时才有比较意义。
 
 ```bash
 uv run examples/piper/chunk_relative/infer_test.py \
   --dataset local/datasets/test_chunk_relative \
-  --wrist-camera <OpenCV设备编号> --wrist-capture-size <原图宽> <原图高> \
+  --wrist-camera 0 --wrist-capture-size 640 480 \
   --preview-wrist local/runs/outputs/wrist_preview
 ```
 
 预览目录中 `raw.png` 是相机实际输出，`prepared.png` 是待送入模型前的 640×480 画面，`model_input.png` 是模型看到的 224×224 画面；若数据集视频存在，还会保存 `reference_dataset.png` 和 `reference_model_input.png`（第 0 集第 30 帧）。比较取景范围、视角和物体比例，确定裁剪框后加 `--wrist-crop X Y W H` 再预览。`X Y W H` 是**原始相机帧**中的像素坐标，程序会将此区域缩放到训练视频的 640×480。若相机驱动已经输出训练时裁好的 640×480，则明确使用 `--wrist-capture-size 640 480 --wrist-crop 0 0 640 480`。预览会打印实际帧尺寸；设备若未按请求输出指定分辨率，应按实际尺寸重新确定裁剪框。没有原始裁剪参数和现场图像，无法仅凭训练视频证明画面完全一致。
+
+专用入口默认显式开启 USB 相机的自动曝光和自动白平衡；若根据同场景对比确认训练采集使用了固定值，可在**预览和真机推理中使用相同参数** `--wrist-exposure-ms <毫秒> --wrist-white-balance-k <色温K>`。相机 0 支持的手动色温范围为 2800 至 6500 K。手动曝光会写入实际请求值（V4L2 单位为 0.1 ms），不再固定写入 100。`capture_report.json` 可检查参数是否生效；不要把自动模式下标记 `inactive` 的 166 或 4600 当成训练参数。
 
 确认裁剪框后再运行真机推理：
 

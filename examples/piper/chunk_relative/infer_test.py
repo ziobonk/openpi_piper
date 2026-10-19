@@ -11,6 +11,7 @@ import numpy as np
 
 PIPER_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PIPER_DIR / "runtime"))
+from camera_utils import OpenCVCameras  # noqa: E402
 from camera_utils import _resize_pad_bgr  # noqa: E402
 from camera_utils import crop_resize_bgr  # noqa: E402
 import inference_eef  # noqa: E402
@@ -51,6 +52,8 @@ def preview_wrist(
     crop: tuple[int, int, int, int] | None,
     wrist_size: tuple[int, int],
     output_dir: Path,
+    exposure_ms: float | None = None,
+    white_balance_k: int | None = None,
 ) -> None:
     """Save the raw and prepared USB frames without opening CAN or a policy client."""
     cap = cv2.VideoCapture(camera_id)
@@ -60,6 +63,14 @@ def preview_wrist(
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, capture_size[0])
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, capture_size[1])
         cap.set(cv2.CAP_PROP_FPS, 30)
+        if exposure_ms is None:
+            OpenCVCameras._set_auto_exposure(cap, "wrist")  # noqa: SLF001
+        else:
+            OpenCVCameras._set_exposure(cap, "wrist", exposure_ms)  # noqa: SLF001
+        if white_balance_k is None:
+            OpenCVCameras._set_auto_white_balance(cap, "wrist")  # noqa: SLF001
+        else:
+            OpenCVCameras._set_white_balance(cap, "wrist", white_balance_k)  # noqa: SLF001
         frame = None
         for _ in range(10):
             ok, candidate = cap.read()
@@ -108,6 +119,8 @@ def main() -> None:
                         help="crop rectangle in raw USB pixels; use 0 0 W H if USB output is already cropped")
     parser.add_argument("--preview-wrist", type=Path, metavar="OUTPUT_DIR",
                         help="save raw, cropped and model images without connecting the robot")
+    parser.add_argument("--wrist-exposure-ms", type=float, help="manual USB exposure in milliseconds; default auto")
+    parser.add_argument("--wrist-white-balance-k", type=int, help="manual USB white balance temperature; default auto")
     parser.add_argument("--steps", type=int, default=1, help="future TCP targets per query, 1..49")
     parser.add_argument("--tcp-offset-m", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"))
     parser.add_argument("--max-pos-speed", type=float, default=0.05, help="TCP interpolation limit in m/s")
@@ -127,10 +140,17 @@ def main() -> None:
     crop = tuple(args.wrist_crop) if args.wrist_crop is not None else None
     if min(capture_size) <= 0 or (crop is not None and (min(crop[:2]) < 0 or min(crop[2:]) <= 0)):
         parser.error("wrist capture size and crop dimensions must be positive; crop origin must be nonnegative")
+    if args.wrist_exposure_ms is not None and (not np.isfinite(args.wrist_exposure_ms) or args.wrist_exposure_ms <= 0):
+        parser.error("--wrist-exposure-ms must be finite and positive")
+    if args.wrist_white_balance_k is not None and args.wrist_white_balance_k <= 0:
+        parser.error("--wrist-white-balance-k must be positive")
 
     fps, base_size, wrist_size, prompt = training_metadata(args.dataset)
     if args.preview_wrist is not None:
-        preview_wrist(args.dataset, args.wrist_camera, capture_size, crop, wrist_size, args.preview_wrist)
+        preview_wrist(
+            args.dataset, args.wrist_camera, capture_size, crop, wrist_size, args.preview_wrist,
+            args.wrist_exposure_ms, args.wrist_white_balance_k,
+        )
         return
     if args.base_camera is None:
         parser.error("--base-camera is required for live inference")
@@ -165,6 +185,14 @@ def main() -> None:
         runtime_argv.append("--visualize_trajectory")
     if args.trajectory_log is not None:
         runtime_argv.extend(("--trajectory_log", args.trajectory_log))
+    if args.wrist_exposure_ms is None:
+        runtime_argv.append("--wrist_cv_force_auto_exposure")
+    else:
+        runtime_argv.extend(("--wrist_exposure", str(args.wrist_exposure_ms)))
+    if args.wrist_white_balance_k is None:
+        runtime_argv.append("--wrist_cv_force_auto_white_balance")
+    else:
+        runtime_argv.extend(("--wrist_cv_white_balance_k", str(args.wrist_white_balance_k)))
     print(f"[test] {fps:g} Hz, base {base_size}, wrist raw {capture_size}, crop {crop} -> {wrist_size}")
     print("[test] model state = 0; physical gripper is not enabled or commanded")
     inference_eef.main(inference_eef._parse_args(argv=runtime_argv))  # noqa: SLF001

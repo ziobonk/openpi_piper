@@ -7,11 +7,13 @@ import sys
 import threading
 from types import SimpleNamespace
 
+import cv2
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from examples.piper.chunk_relative import capture_wrist_diagnostics
 from examples.piper.chunk_relative import infer_test
 from examples.piper.runtime import inference_eef as eef
 from examples.piper.runtime.camera_utils import OpenCVCameras
@@ -104,10 +106,23 @@ def test_test_entry_passes_training_metadata_and_disables_gripper(tmp_path, monk
     assert args.wrist_cv_size == [1280, 720]
     assert args.wrist_cv_crop == [100, 50, 960, 640]
     assert args.wrist_cv_output_size == [640, 480]
+    assert args.wrist_cv_force_auto_exposure
+    assert args.wrist_cv_force_auto_white_balance
     assert args.tcp_offset_m == [0.0, 0.0, 0.22]
     assert args.interp_freq == 30
     assert args.max_pos_speed == 0.05
     assert args.max_rot_speed == 0.3
+    monkeypatch.setattr(sys, "argv", [
+        "infer_test.py", "--dataset", str(dataset), "--base-camera", "serial", "--wrist-camera", "0",
+        "--wrist-crop", "0", "0", "640", "480",
+        "--wrist-exposure-ms", "25", "--wrist-white-balance-k", "4600",
+    ])
+    infer_test.main()
+    manual = captured[1]
+    assert manual.wrist_exposure == 25.0
+    assert manual.wrist_cv_white_balance_k == 4600
+    assert not manual.wrist_cv_force_auto_exposure
+    assert not manual.wrist_cv_force_auto_white_balance
 
 
 def test_wrist_crop_uses_raw_frame_coordinates_and_dataset_size():
@@ -141,6 +156,9 @@ def test_preview_only_reads_wrist_camera_and_writes_comparison_images(tmp_path, 
         def set(self, *_):
             return True
 
+        def get(self, *_):
+            return 1.0
+
         def read(self):
             return True, np.full((6, 8, 3), (10, 20, 30), dtype=np.uint8)
 
@@ -152,3 +170,54 @@ def test_preview_only_reads_wrist_camera_and_writes_comparison_images(tmp_path, 
     assert (tmp_path / "preview/raw.png").exists()
     assert (tmp_path / "preview/prepared.png").exists()
     assert (tmp_path / "preview/model_input.png").exists()
+
+
+def test_manual_camera_controls_apply_requested_values():
+    class FakeCapture:
+        def __init__(self):
+            self.values = {}
+
+        def set(self, prop, value):
+            self.values[prop] = value
+            return True
+
+        def get(self, prop):
+            return self.values[prop]
+
+    cap = FakeCapture()
+    OpenCVCameras._set_exposure(cap, "wrist", 25.0)
+    OpenCVCameras._set_white_balance(cap, "wrist", 4600)
+    assert cap.values[cv2.CAP_PROP_AUTO_EXPOSURE] == 0.25
+    assert cap.values[cv2.CAP_PROP_EXPOSURE] == 250
+    assert cap.values[cv2.CAP_PROP_AUTO_WB] == 0
+    assert cap.values[cv2.CAP_PROP_WB_TEMPERATURE] == 4600
+
+
+def test_capture_script_saves_raw_frame_and_report(tmp_path, monkeypatch):
+    class FakeCapture:
+        def isOpened(self):  # noqa: N802 - OpenCV method name
+            return True
+
+        def set(self, *_):
+            return True
+
+        def get(self, prop):
+            return {cv2.CAP_PROP_FRAME_WIDTH: 640, cv2.CAP_PROP_FRAME_HEIGHT: 480,
+                    cv2.CAP_PROP_FPS: 30}.get(prop, 0)
+
+        def read(self):
+            return True, np.full((4, 6, 3), 120, dtype=np.uint8)
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(capture_wrist_diagnostics.cv2, "VideoCapture", lambda *_: FakeCapture())
+    monkeypatch.setattr(capture_wrist_diagnostics, "v4l2_report", lambda *_: {"controls": {"stdout": "auto_exposure value=3"}})
+    args = SimpleNamespace(
+        camera=0, device=None, output_dir=tmp_path / "capture", fourcc=None,
+        width=640, height=480, fps=30, warmup_frames=1, frames=2, dataset=None,
+    )
+    report = capture_wrist_diagnostics.capture(args)
+    assert report["frames"]["raw_00.png"]["size"] == [6, 4]
+    assert (args.output_dir / "raw_00.png").exists()
+    assert (args.output_dir / "capture_report.json").exists()

@@ -284,7 +284,10 @@ class OpenCVCameras:
                  third_id: Optional[int] = None, exposure: Optional[float] = None,
                  wrist_size: Optional[tuple[int, int]] = None,
                  wrist_crop: Optional[tuple[int, int, int, int]] = None,
-                 wrist_output_size: Optional[tuple[int, int]] = None):
+                 wrist_output_size: Optional[tuple[int, int]] = None,
+                 wrist_white_balance_k: Optional[int] = None,
+                 wrist_force_auto_exposure: bool = False,
+                 wrist_force_auto_white_balance: bool = False):
         if not HAS_CV2:
             raise ImportError("需要 opencv-python: pip install opencv-python")
 
@@ -306,8 +309,14 @@ class OpenCVCameras:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             cap.set(cv2.CAP_PROP_FPS, CAPTURE_FPS)
-            if exposure is not None:
+            if name == "wrist" and exposure is not None:
                 self._set_exposure(cap, name, exposure)
+            elif name == "wrist" and wrist_force_auto_exposure:
+                self._set_auto_exposure(cap, name)
+            if name == "wrist" and wrist_white_balance_k is not None:
+                self._set_white_balance(cap, name, wrist_white_balance_k)
+            elif name == "wrist" and wrist_force_auto_white_balance:
+                self._set_auto_white_balance(cap, name)
             self._caps[name] = cap
             self._latest[name] = np.zeros((height, width, 3), dtype=np.uint8)
 
@@ -319,13 +328,37 @@ class OpenCVCameras:
     def _set_exposure(cap, name: str, exposure_ms: float):
         """关闭自动曝光并设置固定曝光时间 (单位 ms → V4L2 100µs 步长)。"""
         ms = float(exposure_ms)
-        if ms <= 0:
-            print(f"[Camera] ⚠ ({name}) 曝光值需 > 0，忽略 {ms}")
-            return
-        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # 0 = 手动 (关闭自动曝光)
+        if not np.isfinite(ms) or ms <= 0:
+            raise ValueError("manual exposure must be finite and positive milliseconds")
+        if not cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25):
+            raise RuntimeError(f"[Camera] ({name}) could not disable automatic exposure")
         v4l2 = int(round(ms * 10.0))  # 1 ms = 10 × 100 µs
-        cap.set(cv2.CAP_PROP_EXPOSURE, 100)
-        print(f"[Camera] ({name}) 手动曝光 {ms} ms (V4L2={v4l2})")
+        if not cap.set(cv2.CAP_PROP_EXPOSURE, v4l2):
+            raise RuntimeError(f"[Camera] ({name}) could not set exposure to {v4l2} V4L2 units")
+        print(f"[Camera] ({name}) 手动曝光 {ms:g} ms (V4L2={v4l2}, readback={cap.get(cv2.CAP_PROP_EXPOSURE):g})")
+
+    @staticmethod
+    def _set_white_balance(cap, name: str, kelvin: int):
+        """Disable automatic white balance and set V4L2 color temperature in kelvin."""
+        if kelvin <= 0:
+            raise ValueError("manual white-balance temperature must be positive kelvin")
+        if not cap.set(cv2.CAP_PROP_AUTO_WB, 0):
+            raise RuntimeError(f"[Camera] ({name}) could not disable automatic white balance")
+        if not cap.set(cv2.CAP_PROP_WB_TEMPERATURE, kelvin):
+            raise RuntimeError(f"[Camera] ({name}) could not set white balance to {kelvin} K")
+        print(f"[Camera] ({name}) 手动白平衡 {kelvin} K (readback={cap.get(cv2.CAP_PROP_WB_TEMPERATURE):g})")
+
+    @staticmethod
+    def _set_auto_exposure(cap, name: str):
+        if not cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75):
+            raise RuntimeError(f"[Camera] ({name}) could not enable automatic exposure")
+        print(f"[Camera] ({name}) 自动曝光 (readback={cap.get(cv2.CAP_PROP_AUTO_EXPOSURE):g})")
+
+    @staticmethod
+    def _set_auto_white_balance(cap, name: str):
+        if not cap.set(cv2.CAP_PROP_AUTO_WB, 1):
+            raise RuntimeError(f"[Camera] ({name}) could not enable automatic white balance")
+        print(f"[Camera] ({name}) 自动白平衡 (readback={cap.get(cv2.CAP_PROP_AUTO_WB):g})")
 
     def start(self):
         if not self._caps:
@@ -445,6 +478,9 @@ def create_cameras(
     wrist_cv_size: Optional[tuple[int, int]] = None,
     wrist_cv_crop: Optional[tuple[int, int, int, int]] = None,
     wrist_cv_output_size: Optional[tuple[int, int]] = None,
+    wrist_cv_white_balance_k: Optional[int] = None,
+    wrist_cv_force_auto_exposure: bool = False,
+    wrist_cv_force_auto_white_balance: bool = False,
 ):
     """创建一个统一接口的相机对象。
 
@@ -485,7 +521,10 @@ def create_cameras(
     if cv_requested:
         cv_cam = OpenCVCameras(base_id=base_cv_id, wrist_id=wrist_cv_id, third_id=third_cv_id,
                                exposure=wrist_cv_exposure, wrist_size=wrist_cv_size,
-                               wrist_crop=wrist_cv_crop, wrist_output_size=wrist_cv_output_size)
+                               wrist_crop=wrist_cv_crop, wrist_output_size=wrist_cv_output_size,
+                               wrist_white_balance_k=wrist_cv_white_balance_k,
+                               wrist_force_auto_exposure=wrist_cv_force_auto_exposure,
+                               wrist_force_auto_white_balance=wrist_cv_force_auto_white_balance)
 
     if rs_cam is not None and cv_cam is not None:
         return CompositeCameras(
