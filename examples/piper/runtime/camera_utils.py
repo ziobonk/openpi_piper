@@ -352,8 +352,13 @@ class OpenCVCameras:
         ms = float(exposure_ms)
         if not np.isfinite(ms) or ms <= 0:
             raise ValueError("manual exposure must be finite and positive milliseconds")
-        if not cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25):
+        # V4L2 exposes its menu values directly through this OpenCV backend:
+        # 1 = manual, 3 = aperture priority (automatic exposure).
+        if not cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 1):
             raise RuntimeError(f"[Camera] ({name}) could not disable automatic exposure")
+        mode = cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)
+        if mode != 1:
+            raise RuntimeError(f"[Camera] ({name}) requested manual exposure mode 1, got {mode:g}")
         v4l2 = int(round(ms * 10.0))  # 1 ms = 10 × 100 µs
         if not cap.set(cv2.CAP_PROP_EXPOSURE, v4l2):
             raise RuntimeError(f"[Camera] ({name}) could not set exposure to {v4l2} V4L2 units")
@@ -372,9 +377,12 @@ class OpenCVCameras:
 
     @staticmethod
     def _set_auto_exposure(cap, name: str):
-        if not cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75):
+        if not cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 3):
             raise RuntimeError(f"[Camera] ({name}) could not enable automatic exposure")
-        print(f"[Camera] ({name}) 自动曝光 (readback={cap.get(cv2.CAP_PROP_AUTO_EXPOSURE):g})")
+        mode = cap.get(cv2.CAP_PROP_AUTO_EXPOSURE)
+        if mode != 3:
+            raise RuntimeError(f"[Camera] ({name}) requested automatic exposure mode 3, got {mode:g}")
+        print(f"[Camera] ({name}) 自动曝光 (readback={mode:g})")
 
     @staticmethod
     def _set_auto_white_balance(cap, name: str):

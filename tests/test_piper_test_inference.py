@@ -155,15 +155,17 @@ def test_preview_only_reads_wrist_camera_and_writes_comparison_images(tmp_path, 
     class FakeCapture:
         def __init__(self):
             self.reads = 0
+            self.values = {}
 
         def isOpened(self):  # noqa: N802 - OpenCV method name
             return True
 
-        def set(self, *_):
+        def set(self, prop, value):
+            self.values[prop] = value
             return True
 
-        def get(self, *_):
-            return 1.0
+        def get(self, prop):
+            return self.values.get(prop, 1.0)
 
         def read(self):
             self.reads += 1
@@ -200,10 +202,33 @@ def test_manual_camera_controls_apply_requested_values():
     cap = FakeCapture()
     OpenCVCameras._set_exposure(cap, "wrist", 25.0)
     OpenCVCameras._set_white_balance(cap, "wrist", 4600)
-    assert cap.values[cv2.CAP_PROP_AUTO_EXPOSURE] == 0.25
+    assert cap.values[cv2.CAP_PROP_AUTO_EXPOSURE] == 1
     assert cap.values[cv2.CAP_PROP_EXPOSURE] == 250
     assert cap.values[cv2.CAP_PROP_AUTO_WB] == 0
     assert cap.values[cv2.CAP_PROP_WB_TEMPERATURE] == 4600
+
+
+def test_auto_exposure_uses_v4l2_mode_and_checks_readback():
+    class FakeCapture:
+        def __init__(self):
+            self.mode = 1
+
+        def set(self, prop, value):
+            assert prop == cv2.CAP_PROP_AUTO_EXPOSURE
+            self.mode = value
+            return True
+
+        def get(self, prop):
+            assert prop == cv2.CAP_PROP_AUTO_EXPOSURE
+            return self.mode
+
+    cap = FakeCapture()
+    OpenCVCameras._set_auto_exposure(cap, "wrist")
+    assert cap.mode == 3
+
+    cap.get = lambda prop: 1
+    with np.testing.assert_raises_regex(RuntimeError, "requested automatic exposure mode 3, got 1"):
+        OpenCVCameras._set_auto_exposure(cap, "wrist")
 
 
 def test_wrist_capture_requires_requested_pixel_format_and_resolution(monkeypatch):
