@@ -895,6 +895,7 @@ class PiperEEFInference:
         wrist_cv_force_auto_exposure: bool = False,
         wrist_cv_force_auto_white_balance: bool = False,
         wrist_cv_fourcc: Optional[str] = None,
+        wrist_cv_warmup_frames: int = 0,
     ):
         self._action_horizon = action_horizon
         self._exec_horizon = exec_horizon
@@ -1013,6 +1014,7 @@ class PiperEEFInference:
             wrist_cv_force_auto_exposure=wrist_cv_force_auto_exposure,
             wrist_cv_force_auto_white_balance=wrist_cv_force_auto_white_balance,
             wrist_cv_fourcc=wrist_cv_fourcc,
+            wrist_cv_warmup_frames=wrist_cv_warmup_frames,
         )
         self._has_base_cam = bool(rs2_base_serial or cv_base_id is not None)
         self._has_wrist_cam = bool(rs2_wrist_serial or cv_wrist_id is not None)
@@ -2000,6 +2002,7 @@ def _parse_args(parser=None, argv=None):
     p.add_argument("--wrist_cv_force_auto_exposure", action="store_true", help="显式启用 USB 腕部相机自动曝光")
     p.add_argument("--wrist_cv_force_auto_white_balance", action="store_true", help="显式启用 USB 腕部相机自动白平衡")
     p.add_argument("--wrist_cv_fourcc", default=None, help="USB 腕部相机采集格式，如 YUYV")
+    p.add_argument("--wrist_cv_warmup_frames", type=int, default=0, help="控制前等待的腕部有效帧数")
     p.add_argument(
         "--wrist_exposure",
         type=float,
@@ -2289,6 +2292,7 @@ def main(args=None):
         wrist_cv_force_auto_exposure=args.wrist_cv_force_auto_exposure,
         wrist_cv_force_auto_white_balance=args.wrist_cv_force_auto_white_balance,
         wrist_cv_fourcc=args.wrist_cv_fourcc,
+        wrist_cv_warmup_frames=args.wrist_cv_warmup_frames,
         base_rs_size=tuple(args.base_rs_size),
         cv_base_id=args.cam_ids[0] if len(args.cam_ids) > 0 else None,
         cv_wrist_id=args.usb_wrist

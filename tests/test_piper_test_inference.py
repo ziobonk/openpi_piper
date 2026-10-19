@@ -108,6 +108,7 @@ def test_test_entry_passes_training_metadata_and_disables_gripper(tmp_path, monk
     assert args.wrist_cv_crop == [100, 50, 960, 640]
     assert args.wrist_cv_output_size == [640, 480]
     assert args.wrist_cv_fourcc == "YUYV"
+    assert args.wrist_cv_warmup_frames == 60
     assert args.wrist_cv_force_auto_exposure
     assert args.wrist_cv_force_auto_white_balance
     assert args.tcp_offset_m == [0.0, 0.0, 0.22]
@@ -152,6 +153,9 @@ def test_runtime_wrist_image_crops_before_model_resize():
 
 def test_preview_only_reads_wrist_camera_and_writes_comparison_images(tmp_path, monkeypatch):
     class FakeCapture:
+        def __init__(self):
+            self.reads = 0
+
         def isOpened(self):  # noqa: N802 - OpenCV method name
             return True
 
@@ -162,13 +166,16 @@ def test_preview_only_reads_wrist_camera_and_writes_comparison_images(tmp_path, 
             return 1.0
 
         def read(self):
+            self.reads += 1
             return True, np.full((6, 8, 3), (10, 20, 30), dtype=np.uint8)
 
         def release(self):
             pass
 
-    monkeypatch.setattr(infer_test.cv2, "VideoCapture", lambda *_: FakeCapture())
+    cap = FakeCapture()
+    monkeypatch.setattr(infer_test.cv2, "VideoCapture", lambda *_: cap)
     infer_test.preview_wrist(tmp_path, 0, (8, 6), (2, 1, 4, 4), (4, 4), tmp_path / "preview")
+    assert cap.reads == 60
     assert (tmp_path / "preview/raw.png").exists()
     assert (tmp_path / "preview/prepared.png").exists()
     assert (tmp_path / "preview/model_input.png").exists()
@@ -210,13 +217,25 @@ def test_wrist_capture_requires_requested_pixel_format_and_resolution(monkeypatc
         def get(self, prop):
             return self.values.get(prop, 0)
 
+        def read(self):
+            return True, np.full((480, 640, 3), 120, dtype=np.uint8)
+
+        def release(self):
+            pass
+
     cap = FakeCapture()
     monkeypatch.setattr(camera_utils.cv2, "VideoCapture", lambda *_: cap)
-    OpenCVCameras(wrist_id=0, wrist_size=(640, 480), wrist_fourcc="YUYV")
+    camera = OpenCVCameras(wrist_id=0, wrist_size=(640, 480), wrist_fourcc="YUYV", wrist_warmup_frames=3)
     assert cap.values[cv2.CAP_PROP_FOURCC] == cv2.VideoWriter_fourcc(*"YUYV")
     assert cap.values[cv2.CAP_PROP_FRAME_WIDTH] == 640
     assert cap.values[cv2.CAP_PROP_FRAME_HEIGHT] == 480
     assert cap.values[cv2.CAP_PROP_FPS] == 30
+    camera.start()
+    try:
+        assert camera._wrist_frame_count >= 3
+        assert np.any(camera.get_wrist())
+    finally:
+        camera.stop()
 
 
 def test_capture_script_saves_raw_frame_and_report(tmp_path, monkeypatch):

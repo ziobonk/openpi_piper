@@ -80,7 +80,7 @@ def preview_wrist(
         else:
             OpenCVCameras._set_white_balance(cap, "wrist", white_balance_k)  # noqa: SLF001
         frame = None
-        for _ in range(10):
+        for _ in range(60):
             ok, candidate = cap.read()
             if ok:
                 frame = candidate
@@ -190,6 +190,7 @@ def main() -> None:
         "--wrist_cv_crop", *(str(value) for value in crop),
         "--wrist_cv_output_size", str(wrist_size[0]), str(wrist_size[1]),
         "--wrist_cv_fourcc", args.wrist_fourcc,
+        "--wrist_cv_warmup_frames", "60",
         "--prompt", prompt,
     ]
     if args.tcp_offset_m is not None:

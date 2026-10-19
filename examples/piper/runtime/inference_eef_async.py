@@ -552,6 +552,7 @@ def main(args=None, *, mode: str = "temporal_smoothing"):
         wrist_cv_force_auto_exposure=args.wrist_cv_force_auto_exposure,
         wrist_cv_force_auto_white_balance=args.wrist_cv_force_auto_white_balance,
         wrist_cv_fourcc=args.wrist_cv_fourcc,
+        wrist_cv_warmup_frames=args.wrist_cv_warmup_frames,
         action_horizon=args.action_horizon,
         exec_horizon=args.exec_horizon,
         max_pos_speed=args.max_pos_speed,

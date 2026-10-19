@@ -288,7 +288,8 @@ class OpenCVCameras:
                  wrist_white_balance_k: Optional[int] = None,
                  wrist_force_auto_exposure: bool = False,
                  wrist_force_auto_white_balance: bool = False,
-                 wrist_fourcc: Optional[str] = None):
+                 wrist_fourcc: Optional[str] = None,
+                 wrist_warmup_frames: int = 0):
         if not HAS_CV2:
             raise ImportError("需要 opencv-python: pip install opencv-python")
 
@@ -299,6 +300,11 @@ class OpenCVCameras:
         self._thread: Optional[threading.Thread] = None
         self._wrist_crop = wrist_crop
         self._wrist_output_size = wrist_output_size
+        if wrist_warmup_frames < 0:
+            raise ValueError("wrist_warmup_frames must be nonnegative")
+        self._wrist_warmup_frames = wrist_warmup_frames
+        self._wrist_frame_count = 0
+        self._wrist_ready = threading.Event()
 
         for name, dev_id in [("base", base_id), ("wrist", wrist_id), ("third", third_id)]:
             if dev_id is None:
@@ -383,6 +389,12 @@ class OpenCVCameras:
         self._running = True
         self._thread = threading.Thread(target=self._grab_loop, daemon=True)
         self._thread.start()
+        if self._wrist_warmup_frames and "wrist" in self._caps:
+            timeout = max(5.0, 3.0 * self._wrist_warmup_frames / CAPTURE_FPS)
+            if not self._wrist_ready.wait(timeout=timeout):
+                self.stop()
+                raise RuntimeError(f"wrist camera did not deliver {self._wrist_warmup_frames} warmup frames")
+            print(f"[Camera] 腕部相机已预热 {self._wrist_frame_count} 帧")
         print(f"[Camera] OpenCV 已启动: {list(self._caps.keys())}")
 
     def stop(self):
@@ -426,6 +438,10 @@ class OpenCVCameras:
                         if id(c) == cid:
                             with self._lock:
                                 self._latest[n] = frame.copy()
+                    if "wrist" in self._caps and id(self._caps["wrist"]) == cid:
+                        self._wrist_frame_count += 1
+                        if self._wrist_frame_count >= self._wrist_warmup_frames:
+                            self._wrist_ready.set()
             time.sleep(0.005)
 
 
@@ -457,8 +473,15 @@ class CompositeCameras:
         self._backends = backends
 
     def start(self):
-        for backend in self._backends:
-            backend.start()
+        started = []
+        try:
+            for backend in self._backends:
+                backend.start()
+                started.append(backend)
+        except Exception:
+            for backend in reversed(started):
+                backend.stop()
+            raise
 
     def stop(self):
         for backend in self._backends:
@@ -498,6 +521,7 @@ def create_cameras(
     wrist_cv_force_auto_exposure: bool = False,
     wrist_cv_force_auto_white_balance: bool = False,
     wrist_cv_fourcc: Optional[str] = None,
+    wrist_cv_warmup_frames: int = 0,
 ):
     """创建一个统一接口的相机对象。
 
@@ -542,7 +566,8 @@ def create_cameras(
                                wrist_white_balance_k=wrist_cv_white_balance_k,
                                wrist_force_auto_exposure=wrist_cv_force_auto_exposure,
                                wrist_force_auto_white_balance=wrist_cv_force_auto_white_balance,
-                               wrist_fourcc=wrist_cv_fourcc)
+                               wrist_fourcc=wrist_cv_fourcc,
+                               wrist_warmup_frames=wrist_cv_warmup_frames)
 
     if rs_cam is not None and cv_cam is not None:
         return CompositeCameras(
