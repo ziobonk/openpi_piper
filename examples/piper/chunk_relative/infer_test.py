@@ -54,15 +54,23 @@ def preview_wrist(
     output_dir: Path,
     exposure_ms: float | None = None,
     white_balance_k: int | None = None,
+    fourcc: str | None = None,
 ) -> None:
     """Save the raw and prepared USB frames without opening CAN or a policy client."""
     cap = cv2.VideoCapture(camera_id)
     try:
         if not cap.isOpened():
             raise RuntimeError(f"could not open wrist camera {camera_id}")
+        if fourcc is not None and not cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc)):
+            raise RuntimeError(f"could not request wrist pixel format {fourcc}")
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, capture_size[0])
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, capture_size[1])
         cap.set(cv2.CAP_PROP_FPS, 30)
+        if fourcc is not None:
+            negotiated = int(cap.get(cv2.CAP_PROP_FOURCC))
+            actual_fourcc = "".join(chr((negotiated >> (8 * i)) & 0xFF) for i in range(4))
+            if actual_fourcc != fourcc:
+                raise RuntimeError(f"requested wrist pixel format {fourcc}, got {actual_fourcc!r}")
         if exposure_ms is None:
             OpenCVCameras._set_auto_exposure(cap, "wrist")  # noqa: SLF001
         else:
@@ -121,6 +129,7 @@ def main() -> None:
                         help="save raw, cropped and model images without connecting the robot")
     parser.add_argument("--wrist-exposure-ms", type=float, help="manual USB exposure in milliseconds; default auto")
     parser.add_argument("--wrist-white-balance-k", type=int, help="manual USB white balance temperature; default auto")
+    parser.add_argument("--wrist-fourcc", default="YUYV", help="raw USB pixel format; camera 0 uses YUYV")
     parser.add_argument("--steps", type=int, default=1, help="future TCP targets per query, 1..49")
     parser.add_argument("--tcp-offset-m", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"))
     parser.add_argument("--max-pos-speed", type=float, default=0.05, help="TCP interpolation limit in m/s")
@@ -144,12 +153,15 @@ def main() -> None:
         parser.error("--wrist-exposure-ms must be finite and positive")
     if args.wrist_white_balance_k is not None and args.wrist_white_balance_k <= 0:
         parser.error("--wrist-white-balance-k must be positive")
+    if len(args.wrist_fourcc) != 4 or not args.wrist_fourcc.isascii():
+        parser.error("--wrist-fourcc must be four ASCII characters")
 
     fps, base_size, wrist_size, prompt = training_metadata(args.dataset)
     if args.preview_wrist is not None:
         preview_wrist(
             args.dataset, args.wrist_camera, capture_size, crop, wrist_size, args.preview_wrist,
             args.wrist_exposure_ms, args.wrist_white_balance_k,
+            args.wrist_fourcc,
         )
         return
     if args.base_camera is None:
@@ -177,6 +189,7 @@ def main() -> None:
         "--wrist_cv_size", str(capture_size[0]), str(capture_size[1]),
         "--wrist_cv_crop", *(str(value) for value in crop),
         "--wrist_cv_output_size", str(wrist_size[0]), str(wrist_size[1]),
+        "--wrist_cv_fourcc", args.wrist_fourcc,
         "--prompt", prompt,
     ]
     if args.tcp_offset_m is not None:

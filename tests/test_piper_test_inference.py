@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from examples.piper.chunk_relative import capture_wrist_diagnostics
 from examples.piper.chunk_relative import infer_test
+from examples.piper.runtime import camera_utils
 from examples.piper.runtime import inference_eef as eef
 from examples.piper.runtime.camera_utils import OpenCVCameras
 from examples.piper.runtime.camera_utils import crop_resize_bgr
@@ -106,6 +107,7 @@ def test_test_entry_passes_training_metadata_and_disables_gripper(tmp_path, monk
     assert args.wrist_cv_size == [1280, 720]
     assert args.wrist_cv_crop == [100, 50, 960, 640]
     assert args.wrist_cv_output_size == [640, 480]
+    assert args.wrist_cv_fourcc == "YUYV"
     assert args.wrist_cv_force_auto_exposure
     assert args.wrist_cv_force_auto_white_balance
     assert args.tcp_offset_m == [0.0, 0.0, 0.22]
@@ -191,6 +193,30 @@ def test_manual_camera_controls_apply_requested_values():
     assert cap.values[cv2.CAP_PROP_EXPOSURE] == 250
     assert cap.values[cv2.CAP_PROP_AUTO_WB] == 0
     assert cap.values[cv2.CAP_PROP_WB_TEMPERATURE] == 4600
+
+
+def test_wrist_capture_requires_requested_pixel_format_and_resolution(monkeypatch):
+    class FakeCapture:
+        def __init__(self):
+            self.values = {}
+
+        def isOpened(self):  # noqa: N802 - OpenCV method name
+            return True
+
+        def set(self, prop, value):
+            self.values[prop] = value
+            return True
+
+        def get(self, prop):
+            return self.values.get(prop, 0)
+
+    cap = FakeCapture()
+    monkeypatch.setattr(camera_utils.cv2, "VideoCapture", lambda *_: cap)
+    OpenCVCameras(wrist_id=0, wrist_size=(640, 480), wrist_fourcc="YUYV")
+    assert cap.values[cv2.CAP_PROP_FOURCC] == cv2.VideoWriter_fourcc(*"YUYV")
+    assert cap.values[cv2.CAP_PROP_FRAME_WIDTH] == 640
+    assert cap.values[cv2.CAP_PROP_FRAME_HEIGHT] == 480
+    assert cap.values[cv2.CAP_PROP_FPS] == 30
 
 
 def test_capture_script_saves_raw_frame_and_report(tmp_path, monkeypatch):

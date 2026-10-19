@@ -102,11 +102,13 @@ uv run examples/piper/chunk_relative/capture_wrist_diagnostics.py \
 ```bash
 uv run examples/piper/chunk_relative/infer_test.py \
   --dataset local/datasets/test_chunk_relative \
-  --wrist-camera 0 --wrist-capture-size 640 480 \
+  --wrist-camera 0 --wrist-capture-size 640 480 --wrist-crop 0 0 640 480 \
   --preview-wrist local/runs/outputs/wrist_preview
 ```
 
-预览目录中 `raw.png` 是相机实际输出，`prepared.png` 是待送入模型前的 640×480 画面，`model_input.png` 是模型看到的 224×224 画面；若数据集视频存在，还会保存 `reference_dataset.png` 和 `reference_model_input.png`（第 0 集第 30 帧）。比较取景范围、视角和物体比例，确定裁剪框后加 `--wrist-crop X Y W H` 再预览。`X Y W H` 是**原始相机帧**中的像素坐标，程序会将此区域缩放到训练视频的 640×480。若相机驱动已经输出训练时裁好的 640×480，则明确使用 `--wrist-capture-size 640 480 --wrist-crop 0 0 640 480`。预览会打印实际帧尺寸；设备若未按请求输出指定分辨率，应按实际尺寸重新确定裁剪框。没有原始裁剪参数和现场图像，无法仅凭训练视频证明画面完全一致。
+预览目录中 `raw.png` 是相机实际输出，`prepared.png` 是待送入模型前的 640×480 画面，`model_input.png` 是模型看到的 224×224 画面；若数据集视频存在，还会保存 `reference_dataset.png` 和 `reference_model_input.png`（第 0 集第 30 帧）。比较取景范围、视角和物体比例，确定裁剪框后加 `--wrist-crop X Y W H` 再预览。`X Y W H` 是**原始相机帧**中的像素坐标，程序会将此区域缩放到训练视频的 640×480。预览会打印实际帧尺寸；设备若未按请求输出指定分辨率，应按实际尺寸重新确定裁剪框。
+
+相机 0 的 `raw_00.png` 与训练视频第 0 集第 30 帧实测都是 640×480，鱼眼圆边拟合约为 `(中心x, 中心y, 半径)=(322,238,261)` 与 `(320,238,262)` 像素；**当前 640×480 输出已经包含与训练视频几乎相同的鱼眼视场，不需要再次裁切**，使用 `--wrist-crop 0 0 640 480`。采集报告显示 OpenCV 实际使用 YUYV、30 FPS；推理入口默认请求 YUYV 并检查实际格式、尺寸和帧率。两帧的相机姿态、桌面摆设和照明不同，所以不能从像素均值差推算训练时的曝光或白平衡设定。
 
 专用入口默认显式开启 USB 相机的自动曝光和自动白平衡；若根据同场景对比确认训练采集使用了固定值，可在**预览和真机推理中使用相同参数** `--wrist-exposure-ms <毫秒> --wrist-white-balance-k <色温K>`。相机 0 支持的手动色温范围为 2800 至 6500 K。手动曝光会写入实际请求值（V4L2 单位为 0.1 ms），不再固定写入 100。`capture_report.json` 可检查参数是否生效；不要把自动模式下标记 `inactive` 的 166 或 4600 当成训练参数。
 
@@ -116,8 +118,8 @@ uv run examples/piper/chunk_relative/infer_test.py \
 uv run examples/piper/chunk_relative/infer_test.py \
   --dataset local/datasets/test_chunk_relative \
   --host <服务器地址> --port 6006 --can-name can0 \
-  --base-camera <RealSense序列号> --wrist-camera <OpenCV设备编号> \
-  --wrist-capture-size <原图宽> <原图高> --wrist-crop X Y W H \
+  --base-camera <RealSense序列号> --wrist-camera 0 \
+  --wrist-capture-size 640 480 --wrist-crop 0 0 640 480 --wrist-fourcc YUYV \
   --steps 1 --tcp-offset-m X Y Z --visualize-trajectory
 ```
 

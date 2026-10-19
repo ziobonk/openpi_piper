@@ -287,7 +287,8 @@ class OpenCVCameras:
                  wrist_output_size: Optional[tuple[int, int]] = None,
                  wrist_white_balance_k: Optional[int] = None,
                  wrist_force_auto_exposure: bool = False,
-                 wrist_force_auto_white_balance: bool = False):
+                 wrist_force_auto_white_balance: bool = False,
+                 wrist_fourcc: Optional[str] = None):
         if not HAS_CV2:
             raise ImportError("需要 opencv-python: pip install opencv-python")
 
@@ -305,10 +306,25 @@ class OpenCVCameras:
             cap = cv2.VideoCapture(dev_id)
             if not cap.isOpened():
                 print(f"[Camera] ⚠ OpenCV 设备 ID {dev_id} ({name}) 打开失败，画面将为黑帧")
+            if name == "wrist" and wrist_fourcc is not None:
+                if len(wrist_fourcc) != 4 or not wrist_fourcc.isascii():
+                    raise ValueError("wrist_fourcc must be four ASCII characters")
+                if not cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*wrist_fourcc)):
+                    raise RuntimeError(f"[Camera] ({name}) could not request pixel format {wrist_fourcc}")
             width, height = wrist_size if name == "wrist" and wrist_size is not None else (CAPTURE_WIDTH, CAPTURE_HEIGHT)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             cap.set(cv2.CAP_PROP_FPS, CAPTURE_FPS)
+            if name == "wrist" and wrist_fourcc is not None:
+                actual_fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+                actual_format = "".join(chr((actual_fourcc >> (8 * i)) & 0xFF) for i in range(4))
+                actual_size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+                actual_fps = cap.get(cv2.CAP_PROP_FPS)
+                if actual_format != wrist_fourcc or actual_size != (width, height) or abs(actual_fps - CAPTURE_FPS) > 0.5:
+                    raise RuntimeError(
+                        f"[Camera] ({name}) requested {width}x{height} {wrist_fourcc} {CAPTURE_FPS} FPS, "
+                        f"got {actual_size[0]}x{actual_size[1]} {actual_format!r} {actual_fps:g} FPS"
+                    )
             if name == "wrist" and exposure is not None:
                 self._set_exposure(cap, name, exposure)
             elif name == "wrist" and wrist_force_auto_exposure:
@@ -481,6 +497,7 @@ def create_cameras(
     wrist_cv_white_balance_k: Optional[int] = None,
     wrist_cv_force_auto_exposure: bool = False,
     wrist_cv_force_auto_white_balance: bool = False,
+    wrist_cv_fourcc: Optional[str] = None,
 ):
     """创建一个统一接口的相机对象。
 
@@ -524,7 +541,8 @@ def create_cameras(
                                wrist_crop=wrist_cv_crop, wrist_output_size=wrist_cv_output_size,
                                wrist_white_balance_k=wrist_cv_white_balance_k,
                                wrist_force_auto_exposure=wrist_cv_force_auto_exposure,
-                               wrist_force_auto_white_balance=wrist_cv_force_auto_white_balance)
+                               wrist_force_auto_white_balance=wrist_cv_force_auto_white_balance,
+                               wrist_fourcc=wrist_cv_fourcc)
 
     if rs_cam is not None and cv_cam is not None:
         return CompositeCameras(
