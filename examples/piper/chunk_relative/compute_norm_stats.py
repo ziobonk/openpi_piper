@@ -63,6 +63,10 @@ def main() -> None:
         if gripper_mapping.get("placeholder_value") != 0.0 or gripper_mapping.get("mapping_stage") != "none":
             raise ValueError("invalid unobserved gripper metadata")
         gripper_q_range = 0.1
+    elif gripper_mapping.get("source_unit") == "mm" and gripper_mapping.get("applied_to_dataset") is False:
+        if gripper_mapping.get("mapping_stage") != "none":
+            raise ValueError("millimeter gripper widths must not be mapped")
+        gripper_q_range = 0.1
     elif gripper_mapping.get("applied_to_dataset") is False:
         if (
             gripper_mapping.get("source_unit") != "rad"

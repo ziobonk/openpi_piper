@@ -22,7 +22,9 @@ from camera_utils import crop_resize_bgr  # noqa: E402
 import inference_eef  # noqa: E402
 
 
-def training_metadata(dataset: Path) -> tuple[float, tuple[int, int], tuple[int, int], str]:
+def training_metadata(
+    dataset: Path, *, native_gripper: bool = False,
+) -> tuple[float, tuple[int, int], tuple[int, int], str]:
     info = json.loads((dataset / "meta/info.json").read_text())
     mapping = info.get("gripper_mapping", {})
     if (
@@ -30,11 +32,21 @@ def training_metadata(dataset: Path) -> tuple[float, tuple[int, int], tuple[int,
         or info.get("source_kind") != "lightumi"
         or info.get("pose_coordinate_frame") != "source_tracking_world_tcp"
         or info.get("coordinate_transform_applied") is not False
-        or mapping.get("available") is not False
-        or mapping.get("placeholder_value") != 0.0
         or info.get("features", {}).get("state", {}).get("shape") != [1]
         or info.get("features", {}).get("actions", {}).get("shape") != [7]
     ):
+        raise ValueError("expected prepared lightUMI chunk-relative metadata")
+    if native_gripper:
+        if (
+            mapping.get("available") is not True
+            or mapping.get("source_unit") != "mm"
+            or mapping.get("applied_to_dataset") is not False
+            or mapping.get("mapping_stage") != "none"
+            or info["features"]["state"].get("names") != ["gripper_width_mm"]
+            or info["features"]["actions"].get("names", [])[-1:] != ["gripper_width_mm"]
+        ):
+            raise ValueError("expected native gripper widths in millimeters without mapping")
+    elif mapping.get("available") is not False or mapping.get("placeholder_value") != 0.0:
         raise ValueError("expected prepared TCP-only lightUMI chunk-relative metadata")
     fps = float(info["fps"])
     base_shape = info["features"]["observation.images.global"]["shape"]
@@ -46,7 +58,7 @@ def training_metadata(dataset: Path) -> tuple[float, tuple[int, int], tuple[int,
         raise ValueError("invalid training FPS or camera shape")
     tasks = [json.loads(line)["task"] for line in (dataset / "meta/tasks.jsonl").read_text().splitlines() if line]
     if len(tasks) != 1 or not tasks[0].strip():
-        raise ValueError("TCP-only inference requires exactly one task prompt")
+        raise ValueError("lightUMI inference requires exactly one task prompt")
     return fps, (int(base_shape[1]), int(base_shape[0])), (int(wrist_shape[1]), int(wrist_shape[0])), tasks[0]
 
 
@@ -155,18 +167,22 @@ def preview_wrist(
     print(f"[wrist preview] images saved to {output_dir}")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset", type=Path, default=Path("local/datasets/test_chunk_relative"))
+def main(*, native_gripper: bool = False) -> None:
+    profile = "pick_cube" if native_gripper else "test"
+    parser = argparse.ArgumentParser(description=(
+        "Live lightUMI chunk-relative inference with the native Piper gripper in millimeters."
+        if native_gripper else __doc__
+    ))
+    parser.add_argument("--dataset", type=Path, default=Path(f"local/datasets/{profile}_chunk_relative"))
     parser.add_argument("--host", default="localhost", help="policy server host")
     parser.add_argument("--port", type=int, default=6006)
     parser.add_argument("--can-name", default="can0")
-    parser.add_argument("--base-camera", help="RealSense base camera serial; required for live inference")
-    parser.add_argument("--wrist-camera", required=True, type=int, help="OpenCV wrist camera index")
+    parser.add_argument("--base-camera", help="global RealSense D435/D435i serial; required for live inference")
+    parser.add_argument("--wrist-camera", required=True, type=int, help="USB wrist camera index N for /dev/videoN")
     parser.add_argument("--wrist-capture-size", type=int, nargs=2, default=(640, 480), metavar=("WIDTH", "HEIGHT"),
                         help="requested raw USB resolution before crop")
     parser.add_argument("--wrist-crop", type=int, nargs=4, metavar=("X", "Y", "WIDTH", "HEIGHT"),
-                        help="crop rectangle in raw USB pixels; use 0 0 W H if USB output is already cropped")
+                        help="X Y W H in raw USB pixels, cropped before resizing to training dimensions; required for live inference")
     parser.add_argument("--preview-wrist", type=Path, metavar="OUTPUT_DIR",
                         help="save raw, cropped and model images without connecting the robot")
     parser.add_argument("--reference-episode", type=int, default=0, help="training video episode for preview")
@@ -204,7 +220,7 @@ def main() -> None:
     if args.reference_episode < 0 or args.reference_frame < 0:
         parser.error("reference episode and frame must be nonnegative")
 
-    fps, base_size, wrist_size, prompt = training_metadata(args.dataset)
+    fps, base_size, wrist_size, prompt = training_metadata(args.dataset, native_gripper=native_gripper)
     if args.preview_wrist is not None:
         preview_wrist(
             args.dataset, args.wrist_camera, capture_size, crop, wrist_size, args.preview_wrist,
@@ -228,8 +244,6 @@ def main() -> None:
         "--action_horizon", "50",
         "--exec_horizon", str(args.steps),
         "--model_action_frame", "chunk_relative",
-        "--model_state_value", "0",
-        "--no_gripper_control",
         "--max_pos_speed", str(args.max_pos_speed),
         "--max_rot_speed", str(args.max_rot_speed),
         "--interp_freq", "30",
@@ -242,6 +256,17 @@ def main() -> None:
         "--wrist_cv_warmup_frames", "60",
         "--prompt", prompt,
     ]
+    if native_gripper:
+        # SDK uses 0.001 mm units. A 70 mm runtime range makes the existing
+        # controller's conversions exactly raw/1000 and round(mm*1000).
+        runtime_argv.extend((
+            "--gripper_port", "",
+            "--gripper_open_width_mm", str(inference_eef.PIPER_GRIPPER_OPEN_RAW / 1000.0),
+            "--gripper_prediction_scale", "1",
+            "--no-binary_gripper",
+        ))
+    else:
+        runtime_argv.extend(("--model_state_value", "0", "--no_gripper_control"))
     if args.tcp_offset_m is not None:
         runtime_argv.extend(("--tcp_offset_m", *(str(value) for value in args.tcp_offset_m)))
     if args.visualize_trajectory:
@@ -249,7 +274,7 @@ def main() -> None:
     if args.trajectory_log is not None:
         runtime_argv.extend(("--trajectory_log", args.trajectory_log))
     inference_log = args.inference_log or (
-        Path("local/runs/outputs/test_inference_logs")
+        Path(f"local/runs/outputs/{profile}_inference_logs")
         / f"{datetime.now(UTC):%Y%m%d_%H%M%S_%f}_{os.getpid()}"
     )
     runtime_argv.extend(("--inference_log", str(inference_log)))
@@ -261,9 +286,13 @@ def main() -> None:
         runtime_argv.append("--wrist_cv_force_auto_white_balance")
     else:
         runtime_argv.extend(("--wrist_cv_white_balance_k", str(args.wrist_white_balance_k)))
-    print(f"[test] {fps:g} Hz, base {base_size}, wrist raw {capture_size}, crop {crop} -> {wrist_size}")
-    print("[test] model state = 0; physical gripper is not enabled or commanded")
-    print(f"[test] inference log: {inference_log}")
+    print(f"[{profile}] global D435/D435i serial={args.base_camera}, capture {base_size}, {fps:g} Hz")
+    print(f"[{profile}] wrist USB /dev/video{args.wrist_camera}: raw {capture_size}, crop {crop} -> training {wrist_size}")
+    if native_gripper:
+        print(f"[{profile}] native Piper gripper: measured mm state, continuous mm commands, no mapping or scaling")
+    else:
+        print("[test] model state = 0; physical gripper is not enabled or commanded")
+    print(f"[{profile}] inference log: {inference_log}")
     inference_eef.main(inference_eef._parse_args(argv=runtime_argv))  # noqa: SLF001
 
 

@@ -1,5 +1,9 @@
 # 用 `local/datasets/test` 在服务器训练 chunk-relative 策略
 
+本次 `local/datasets/pick_cube`（Piper 自带夹爪、毫米宽度直通）的训练与推理命令见 [PICK_CUBE_TRAINING.md](PICK_CUBE_TRAINING.md)。下文保留给无夹爪信号的 `test` 数据集。
+
+本次推理使用 **D435 全局相机 + USB 腕部相机**。腕部先按 USB 原图坐标裁剪，再缩放为训练画面的 640×480；`infer_pick_cube.py` 强制指定 `--wrist-crop X Y W H`。同一 USB 640×480 输出可先用整帧 `0 0 640 480`，并按新文档的预览步骤与 `pick_cube` 训练参考帧核对取景。
+
 源数据为 30 Hz lightUMI 数据：40 集、14,011 帧、两路视频。`action` 是下一对齐帧的 9D 绝对 TCP（xyz + rotation-6D），没有夹爪编码器。准备脚本将下一帧 TCP 移到同帧并转为 rotvec；第 0 帧使用第一条可用 TCP。训练数据的 `state` 和 `actions[:, 6]` **全部为 0**，只训练 TCP 位姿，不提供可用的夹爪预测。原始 `local/datasets/test` 保持不变。
 
 ## 本机准备与核对

@@ -3,20 +3,24 @@
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from examples.piper.chunk_relative import infer_pick_cube  # noqa: E402
 from examples.piper.chunk_relative import infer_pick_place  # noqa: E402
 from examples.piper.chunk_relative.prepare_chunk_relative_eef import _fixed_list  # noqa: E402
 from examples.piper.chunk_relative.prepare_lightumi_chunk_relative import convert  # noqa: E402
 from examples.piper.data_tools.replay_lightumi_tcp_relative import ROTATION_NAMES  # noqa: E402
 
 
-def test_next_frame_tcp_becomes_same_frame_and_gripper_stays_radians(tmp_path, monkeypatch):
+@pytest.mark.parametrize("native_gripper", [False, True])
+def test_next_frame_tcp_becomes_same_frame_and_gripper_keeps_source_units(tmp_path, monkeypatch, native_gripper):
     source = tmp_path / "source"
     output = tmp_path / "prepared"
     (source / "meta").mkdir(parents=True)
@@ -33,9 +37,10 @@ def test_next_frame_tcp_becomes_same_frame_and_gripper_stays_radians(tmp_path, m
         "total_videos": 1,
         "data_path": "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet",
         "features": {
-            "action": {"shape": [10], "names": ["left_tcp_x_m", "left_tcp_y_m", "left_tcp_z_m", *ROTATION_NAMES, "gripper_angle_rad"]},
-            "observation.state": {"shape": [1], "names": ["encoder_angle_rad"]},
+            "action": {"shape": [10], "names": ["left_tcp_x_m", "left_tcp_y_m", "left_tcp_z_m", *ROTATION_NAMES, "gripper_width_mm" if native_gripper else "gripper_angle_rad"]},
+            "observation.state": {"shape": [1], "names": ["gripper_width_mm" if native_gripper else "encoder_angle_rad"]},
             "observation.images.global": {"shape": [480, 640, 3]},
+            "observation.images.camera": {"shape": [480, 640, 3]},
         },
         "lightumi_conversion": {
             "action": "next aligned absolute source-tracking-world TCP xyz + rotation-6D, then next encoder angle in radians",
@@ -56,6 +61,9 @@ def test_next_frame_tcp_becomes_same_frame_and_gripper_stays_radians(tmp_path, m
         [1.1, 2, 3, 1, 0, 0, 0, 1, 0, 0.3],
     ], dtype=np.float32)
     encoder = np.array([[0.1], [0.2], [0.3]], dtype=np.float32)
+    if native_gripper:
+        encoder[:, 0] = [-0.56, 35.0, 69.0]
+        next_actions[:, 9] = [35.0, 69.0, 69.0]
     table = pa.table({
         "frame_index": pa.array([0, 1, 2]),
         "episode_index": pa.array([0, 0, 0]),
@@ -69,13 +77,60 @@ def test_next_frame_tcp_becomes_same_frame_and_gripper_stays_radians(tmp_path, m
     actions = np.asarray(prepared["actions"].to_pylist())
     states = np.asarray(prepared["state"].to_pylist())
     np.testing.assert_allclose(actions[:, :3], [[1, 2, 3], [1, 2, 3], [1.1, 2, 3]])
-    np.testing.assert_allclose(actions[:, 6], [0.1, 0.2, 0.3])
-    np.testing.assert_allclose(states[:, 0], [0.1, 0.2, 0.3])
+    np.testing.assert_array_equal(actions[:, 6], encoder[:, 0])
+    np.testing.assert_array_equal(states, encoder)
     np.testing.assert_allclose(np.asarray(prepared["action"].to_pylist()), next_actions)
     assert (output / video.relative_to(source)).read_bytes() == b"video-placeholder"
     prepared_info = json.loads((output / "meta/info.json").read_text())
     assert prepared_info["gripper_mapping"]["applied_to_dataset"] is False
     assert prepared_info["first_frame_tcp_fill"] == "next_frame_pose"
+    if native_gripper:
+        captured = []
+        eef = infer_pick_cube.infer_test.inference_eef
+        monkeypatch.setattr(eef, "main", captured.append)
+        monkeypatch.setattr(sys, "argv", [
+            "infer_pick_cube.py", "--dataset", str(output), "--base-camera", "serial", "--wrist-camera", "0",
+            "--wrist-capture-size", "1280", "720", "--wrist-crop", "100", "50", "960", "640",
+        ])
+        infer_pick_cube.main()
+        args = captured[0]
+        assert args.model_action_frame == "chunk_relative"
+        assert args.gripper_port == ""
+        assert args.gripper_open_width_mm == 70
+        assert args.model_gripper_range is None
+        assert args.model_state_value is None
+        assert args.no_gripper_control is False
+        assert args.binary_gripper is False
+        assert args.gripper_prediction_scale == 1
+        assert args.control_freq == 30
+        assert args.rs2_base == "serial"
+        assert args.usb_wrist == 0
+        assert args.rs2_wrist is None
+        assert args.base_rs_size == [640, 480]
+        assert args.wrist_cv_size == [1280, 720]
+        assert args.wrist_cv_crop == [100, 50, 960, 640]
+        assert args.wrist_cv_output_size == [640, 480]
+        assert args.prompt == "把方块放到纸盒子里"
+        assert args.inference_log.startswith("local/runs/outputs/pick_cube_inference_logs/")
+
+        # Verify the launcher gives the shared native controller the physical
+        # width range: 35 mm feedback and prediction must stay 35 mm.
+        commands = []
+        robot = eef.PiperEEFController.__new__(eef.PiperEEFController)
+        robot._gripper = None  # noqa: SLF001
+        robot._control_gripper = True  # noqa: SLF001
+        robot._gripper_command_max_mm = args.gripper_open_width_mm  # noqa: SLF001
+        robot._piper = SimpleNamespace(  # noqa: SLF001
+            GetArmGripperMsgs=lambda: SimpleNamespace(gripper_state=SimpleNamespace(grippers_angle=35000)),
+            GripperCtrl=lambda *values: commands.append(values),
+        )
+        assert robot.get_gripper_mm() == 35
+        for width in (35, -0.56, 75):
+            robot.send_gripper_command(width)
+        assert [command[0] for command in commands] == [35000, 0, 70000]
+        with pytest.raises(ValueError, match="TCP-only"):
+            infer_pick_cube.infer_test.training_metadata(output)
+        return
     fps, (closed, opened), open_width_mm, prompt = infer_pick_place.training_metadata(output)
     assert fps == 30
     np.testing.assert_allclose([closed, opened], [0.1, 0.3])
