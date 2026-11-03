@@ -193,8 +193,8 @@ def main():
     ap.add_argument("--port", default="/dev/ttyACM0")
     ap.add_argument("--id", type=int, default=1)
     ap.add_argument("--speed", type=float, default=3.0)
-    ap.add_argument("--open", type=float, default=0.0)
-    ap.add_argument("--close", type=float, default=15.0)
+    ap.add_argument("--open", type=float, default=-10.0)
+    ap.add_argument("--close", type=float, default=0.0)
     ap.add_argument("--current", type=float, default=0.3,
                     help="torque-current limit (i_des, 0..1.0) for force-position")
     ap.add_argument("--mode", type=int, default=4,

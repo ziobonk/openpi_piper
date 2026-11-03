@@ -31,8 +31,8 @@ import time
 
 from dm_j4310 import DmJ4310, CTRL_MODE_FORCE_POS, ERR_MEANING
 
-DEFAULT_OPEN_RAD = 0.0
-DEFAULT_CLOSE_RAD = 5.0
+DEFAULT_OPEN_RAD = -10
+DEFAULT_CLOSE_RAD = 0.0
 DEFAULT_CURRENT_LIMIT = 0.3   # per-unit torque-current limit (i_des 0..1.0)
 WRAP_MARGIN_RAD = 0.3      # stay this far inside the +/-PMAX feedback wrap
 SETTLE_TOL_RAD = 0.03      # consider arrived within this (rad)
@@ -42,7 +42,7 @@ class DmGripper:
     """High-level open/close controller for the DM-J4310-2EC gripper."""
 
     def __init__(self, motor, open_rad=DEFAULT_OPEN_RAD, close_rad=DEFAULT_CLOSE_RAD,
-                 speed_rad_s=2.0, current_limit=DEFAULT_CURRENT_LIMIT):
+                 speed_rad_s=10.0, current_limit=DEFAULT_CURRENT_LIMIT):
         """
         motor: a DmJ4310 instance (force-position mode, CTRL_MODE=4).
         open_rad / close_rad: output-shaft positions for OPEN / CLOSED (rad).

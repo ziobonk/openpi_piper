@@ -68,6 +68,44 @@ WANDB_MODE=offline WANDB_DIR=local/runs/wandb XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 
 训练时第 0 个 TCP 动作是同帧基准，模型采样的其余 49 步才是未来动作。这个数据集没有夹爪信号，推理端必须单独控制或固定夹爪；`infer_pick_place.py` 需要真实夹爪角度元数据，不能直接用于此检查点。
 
+## 用数据集离线检查模型预测
+
+先按下一节的命令启动训练好的策略服务，再在能访问服务、且存有完整准备后数据集（包括两路 MP4）的机器上，从工程根目录执行：
+
+```bash
+uv run examples/piper/chunk_relative/offline_validate_test.py \
+  --dataset local/datasets/test_chunk_relative \
+  --episodes 0 1 2 --host localhost --port 6006 \
+  --stride 10 --max-queries-per-episode 20 \
+  --output local/runs/outputs/test_offline_metrics.json
+```
+
+这个入口不连接机械臂和相机。它在每个查询帧读取数据集的两路图像与零值状态，向模型请求 50 步动作，再把未来 49 步的相对 TCP 与数据集真值比较，输出位置误差（毫米）和旋转误差（度），包括第 1、10、20、49 步的均值。`--max-queries-per-episode 0` 会检查所选 episode 的全部有效查询帧；`--stride` 控制查询间隔。更换 `--episodes` 可选其他集。
+
+加 `--plot-dir` 保存轨迹图和数值，`--gif` 保存切换查询帧的动画。例如查看完整第 0 集的预测窗口：
+
+```bash
+uv run examples/piper/chunk_relative/offline_validate_test.py \
+  --dataset local/datasets/test_chunk_relative \
+  --episodes 0 --host localhost --port 6006 \
+  --stride 10 --max-queries-per-episode 0 \
+  --plot-dir local/runs/outputs/test_trajectory --gif \
+  --output local/runs/outputs/test_trajectory/metrics.json
+```
+
+目录中 `episode_000000.png` 展示第一个查询窗口；`.gif` 依次展示各查询窗口；`.npz` 保存查询帧、整集真值 TCP、各窗口预测与真值 TCP，以及位置和旋转误差。图中灰线是整集真值，橙线是当前窗口真值，蓝线是模型预测。模型相对动作以每次查询的**数据集实测 TCP** 为锚点，还原到数据集 tracking world 坐标；每个窗口独立比较，不把不同查询窗口的预测累计成整集闭环轨迹。右侧显示未来 49 步的位置和旋转误差。
+
+有图形桌面时可加 `--show`，用滑块切换查询窗口，鼠标拖动旋转 3D 视角。保存过 `.npz` 后，可以直接重新打开，无需再次连接模型服务：
+
+```bash
+uv run examples/piper/chunk_relative/offline_validate_test.py \
+  --load-trace local/runs/outputs/test_trajectory/episode_000000.npz --show
+```
+
+当前训练配置使用了数据集的全部 40 集，因此这些数值是**训练集拟合误差**，不能当作泛化性能。若要严格验证泛化能力，先按 episode 划分训练集与未参与训练的验证集，重算训练集归一化统计并重新训练，然后用此入口只评估留出的 episode。离线动作误差也不能替代真机任务成功率。
+
+运行前确认验证数据与训练时使用的是同一版本：当前工作区 `local/datasets/test_chunk_relative/meta/info.json` 记录 14,877 帧，但本工作区的 `assets/pi05_piper_test_chunk_relative/test_chunk_relative/norm_stats_manifest.json` 记录 14,011 帧。若服务器训练时使用的是后者对应的数据集，应在服务器上用那一份数据验证；不要把两份数据的结果混在一起。
+
 ## 训练后推理
 
 先在训练服务器确认实际保存的步数，再从工程根目录启动策略服务：
@@ -119,10 +157,10 @@ uv run examples/piper/chunk_relative/infer_test.py \
 ```bash
 uv run examples/piper/chunk_relative/infer_test.py \
   --dataset local/datasets/test_chunk_relative \
-  --host <服务器地址> --port 6006 --can-name can0 \
-  --base-camera <RealSense序列号> --wrist-camera 0 \
+  --host localhost --port 6006 --can-name can0 \
+  --base-camera 112222070761 --wrist-camera 0 \
   --wrist-capture-size 640 480 --wrist-crop 0 0 640 480 --wrist-fourcc YUYV \
-  --steps 1 --tcp-offset-m X Y Z --visualize-trajectory
+  --steps 10 --tcp-offset-m 0 0 0.22 --visualize-trajectory
 ```
 
 `X Y Z` 是现场实测的 J6 法兰到工具 TCP 平移，单位米；省略该参数时使用工程默认值 `0 0 0.22`，仅在当前工具确实符合时才省略。启动时程序使能机械臂并连接相机、策略服务，按 Enter 才开始发送运动目标；`s` 暂停，`q` 退出。首次每次查询只执行 1 个未来 TCP 目标，再读取当前 Piper TCP 重新锚定；模型第 0 步是同帧动作，会跳过。默认以 30 Hz 插值，并按 `0.05 m/s`、`0.3 rad/s` 限制插值速度；确认方向与工作空间后再增大 `--steps`，范围为 1..49。
