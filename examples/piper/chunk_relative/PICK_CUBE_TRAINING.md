@@ -97,8 +97,10 @@ uv run scripts/serve_policy.py --port 6006 policy:checkpoint \
 
 | 用途 | 设备和参数 | 对应训练数据 |
 | --- | --- | --- |
-| 全局相机 | D435，`--base-camera <RealSense序列号>` | `observation.images.global`，640×480 |
+| 全局相机 | D435，`--base-camera <RealSense序列号>`，默认采集 1280×720@30 FPS 原图 | `observation.images.global`，保存视频为 640×480 |
 | 腕部相机 | USB，`--wrist-camera 0` 表示 `/dev/video0` | `observation.images.camera`，640×480 |
+
+全局相机的处理顺序为：**采集 1280×720 原图 → BGR 转 RGB → 等比缩放到 224×126 → 上下各填充 49 像素黑边，得到模型输入 224×224**。`infer_pick_cube.py` 默认使用该采集尺寸，也可显式指定 `--base-capture-size 1280 720`。数据集保存的视频尺寸与相机原始采集模式分别配置；训练仍读取现有 640×480 视频，并等比缩放填充到 224×224。
 
 USB 腕部的处理顺序为：**采集原图 → 按 `--wrist-crop X Y W H` 裁剪 → 缩放到训练尺寸 640×480 → 等比缩放并填充到模型输入 224×224**。裁剪坐标以原始 USB 帧为准。正式推理必须显式传入裁剪框，缺失或越界会报错。
 
@@ -127,9 +129,10 @@ ssh -N -L 6006:localhost:6006 user@host
 uv run examples/piper/chunk_relative/infer_pick_cube.py \
   --dataset local/datasets/pick_cube_chunk_relative \
   --host localhost --port 6006 --can-name can0 \
-  --base-camera 112222070761 --wrist-camera 0 \
-  --wrist-capture-size 640 480 --wrist-crop 0 0 640 480 --wrist-fourcc YUYV \
-  --steps 1 --tcp-offset-m 0 0 0.22 --visualize-trajectory
+  --base-camera 112222070761 --wrist-camera 6 \
+  --base-capture-size 1280 720 \
+  --wrist-capture-size 640 480 --wrist-crop 0 0 640 480 --wrist-fourcc MJPG \
+  --steps 20 --tcp-offset-m 0 0 0.092 --visualize-trajectory
 ```
 
 启动会使能机械臂和夹爪；沿用现有控制器的原生夹爪初始化，会下发零开度命令。按 Enter 开始推理，`s` 暂停、`q` 退出。每次跳过模型第 0 个同帧动作，执行 `--steps` 个未来目标，再以实测 TCP 重新锚定；可选范围为 `1..49`。默认 30 Hz 插值，平移/旋转速度限制为 `0.05 m/s`、`0.3 rad/s`。无桌面环境时省略 `--visualize-trajectory`。

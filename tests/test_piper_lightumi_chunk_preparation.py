@@ -106,7 +106,7 @@ def test_next_frame_tcp_becomes_same_frame_and_gripper_keeps_source_units(tmp_pa
         assert args.rs2_base == "serial"
         assert args.usb_wrist == 0
         assert args.rs2_wrist is None
-        assert args.base_rs_size == [640, 480]
+        assert args.base_rs_size == [1280, 720]
         assert args.wrist_cv_size == [1280, 720]
         assert args.wrist_cv_crop == [100, 50, 960, 640]
         assert args.wrist_cv_output_size == [640, 480]

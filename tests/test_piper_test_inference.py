@@ -118,12 +118,14 @@ def test_test_entry_passes_training_metadata_and_disables_gripper(tmp_path, monk
     assert args.inference_log.startswith("local/runs/outputs/test_inference_logs/")
     monkeypatch.setattr(sys, "argv", [
         "infer_test.py", "--dataset", str(dataset), "--base-camera", "serial", "--wrist-camera", "0",
+        "--base-capture-size", "1280", "720",
         "--wrist-crop", "0", "0", "640", "480",
         "--wrist-exposure-ms", "25", "--wrist-white-balance-k", "4600",
         "--inference-log", str(tmp_path / "custom_log"),
     ])
     infer_test.main()
     manual = captured[1]
+    assert manual.base_rs_size == [1280, 720]
     assert manual.wrist_exposure == 25.0
     assert manual.wrist_cv_white_balance_k == 4600
     assert not manual.wrist_cv_force_auto_exposure

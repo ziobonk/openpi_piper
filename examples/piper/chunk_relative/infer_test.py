@@ -167,7 +167,7 @@ def preview_wrist(
     print(f"[wrist preview] images saved to {output_dir}")
 
 
-def main(*, native_gripper: bool = False) -> None:
+def main(*, native_gripper: bool = False, base_capture_size: tuple[int, int] | None = None) -> None:
     profile = "pick_cube" if native_gripper else "test"
     parser = argparse.ArgumentParser(description=(
         "Live lightUMI chunk-relative inference with the native Piper gripper in millimeters."
@@ -178,6 +178,10 @@ def main(*, native_gripper: bool = False) -> None:
     parser.add_argument("--port", type=int, default=6006)
     parser.add_argument("--can-name", default="can0")
     parser.add_argument("--base-camera", help="global RealSense D435/D435i serial; required for live inference")
+    parser.add_argument("--base-capture-size", type=int, nargs=2, default=base_capture_size,
+                        metavar=("WIDTH", "HEIGHT"),
+                        help="raw RealSense color resolution before model resize; "
+                             "defaults to the entry-point preset or dataset size")
     parser.add_argument("--wrist-camera", required=True, type=int, help="USB wrist camera index N for /dev/videoN")
     parser.add_argument("--wrist-capture-size", type=int, nargs=2, default=(640, 480), metavar=("WIDTH", "HEIGHT"),
                         help="requested raw USB resolution before crop")
@@ -208,6 +212,8 @@ def main(*, native_gripper: bool = False) -> None:
     ):
         parser.error("tcp-offset-m must be finite meters with length at most 1 m")
     capture_size = tuple(args.wrist_capture_size)
+    if args.base_capture_size is not None and min(args.base_capture_size) <= 0:
+        parser.error("base capture size dimensions must be positive")
     crop = tuple(args.wrist_crop) if args.wrist_crop is not None else None
     if min(capture_size) <= 0 or (crop is not None and (min(crop[:2]) < 0 or min(crop[2:]) <= 0)):
         parser.error("wrist capture size and crop dimensions must be positive; crop origin must be nonnegative")
@@ -220,7 +226,8 @@ def main(*, native_gripper: bool = False) -> None:
     if args.reference_episode < 0 or args.reference_frame < 0:
         parser.error("reference episode and frame must be nonnegative")
 
-    fps, base_size, wrist_size, prompt = training_metadata(args.dataset, native_gripper=native_gripper)
+    fps, dataset_base_size, wrist_size, prompt = training_metadata(args.dataset, native_gripper=native_gripper)
+    base_size = tuple(args.base_capture_size) if args.base_capture_size is not None else dataset_base_size
     if args.preview_wrist is not None:
         preview_wrist(
             args.dataset, args.wrist_camera, capture_size, crop, wrist_size, args.preview_wrist,
